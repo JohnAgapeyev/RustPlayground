@@ -11,6 +11,7 @@ edition = "2018"
 libc = "0.2"
 
 [profile.release]
+#TARGET CPU IS IMPORTANT FOR OPTIMIZATION, DON'T FORGET, FIND A GOOD WAY TO ENABLE
 #strip = true  # Automatically strip symbols from the binary.
 #opt-level = "z"  # Optimize for size.
 opt-level = 3
