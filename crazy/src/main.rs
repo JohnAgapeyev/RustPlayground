@@ -1,6 +1,6 @@
 use libc::{sysconf, _SC_PAGESIZE};
 use std::convert::TryInto;
-use std::io::{stdin, stdout, Read, Write};
+use std::io::*;
 
 fn shift_ascii_char(index: usize, c: u8) -> u8 {
     match index % 2 {
@@ -31,9 +31,9 @@ fn main() {
     //resize capacity and other things, so possibly the read side of the slice operation was a
     //no-op?
     //Not certain, but that's far too deep for my current understanding
-    buffer = vec![0u8; sz].into_boxed_slice();
-    let mut stdin = stdin();
-    let mut stdout = stdout();
+    buffer = vec![0u8; sz*16].into_boxed_slice();
+    let mut stdin = BufReader::new(stdin());
+    let mut stdout = BufWriter::new(stdout());
     while let Ok(size) = stdin.read(&mut *buffer) {
         //While let and if let don't allow match guards, so the check is necessary
         //Didn't want to use a match for something so simple
@@ -51,5 +51,6 @@ fn main() {
         if let Err(_) = stdout.write(&buffer[..size]) {
             break;
         }
+        stdout.flush().unwrap();
     }
 }
