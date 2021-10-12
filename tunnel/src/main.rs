@@ -8,28 +8,28 @@ async fn run_client() {
     // Connect to a peer
     let stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
 
-        let mut interval = time::interval(Duration::from_secs(1));
-        let mut msg_count = 0;
-        loop {
-            interval.tick().await;
-            stream.writable().await.unwrap();
+    let mut interval = time::interval(Duration::from_secs(1));
+    let mut msg_count = 0;
+    loop {
+        interval.tick().await;
+        stream.writable().await.unwrap();
 
-            // Try to write data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-            match stream.try_write(format!("goodbye world {}", msg_count).as_bytes()) {
-                Ok(n) => {
-                    msg_count += 1;
-                    println!("Client sent msg {}", msg_count);
-                    continue;
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
-                Err(e) => {
-                    panic!("Client error I also don't fully understand");
-                }
+        // Try to write data, this may still fail with `WouldBlock`
+        // if the readiness event is a false positive.
+        match stream.try_write(format!("goodbye world {}", msg_count).as_bytes()) {
+            Ok(n) => {
+                msg_count += 1;
+                println!("Client sent msg {}", msg_count);
+                continue;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                continue;
+            }
+            Err(e) => {
+                panic!("Client error I also don't fully understand");
             }
         }
+    }
 }
 
 async fn run_server() {
