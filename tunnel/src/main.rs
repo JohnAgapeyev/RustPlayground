@@ -1,72 +1,100 @@
 use std::env;
 use std::io;
-use tokio::net::*;
-use tokio::time;
-use tokio::time::*;
+use std::io::*;
+use std::collections::HashMap;
+use mio::*;
+use mio::net::*;
 
-async fn run_client() {
+const CLIENT: Token = Token(0);
+const SERVER: Token = Token(1);
+
+fn run_client() {
+    let mut poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(128);
     // Connect to a peer
-    let stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
+    let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
 
-    let mut interval = time::interval(Duration::from_secs(1));
+    poll.registry().register(&mut stream, CLIENT, Interest::READABLE | Interest::WRITABLE).unwrap();
+
+    //let mut interval = time::interval(Duration::from_secs(1));
     let mut msg_count = 0;
     loop {
-        interval.tick().await;
-        stream.writable().await.unwrap();
+        poll.poll(&mut events, None).unwrap();
 
-        // Try to write data, this may still fail with `WouldBlock`
-        // if the readiness event is a false positive.
-        match stream.try_write(format!("goodbye world {}", msg_count).as_bytes()) {
-            Ok(n) => {
-                msg_count += 1;
-                println!("Client sent msg {}", msg_count);
-                continue;
+        for event in events.iter() {
+            match event.token() {
+                CLIENT if event.is_writable() => {
+                    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
+                        Ok(_n) => {
+                            msg_count += 1;
+                            println!("Client sent msg {}", msg_count);
+                            continue;
+                        }
+                        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
+                            continue;
+                        }
+                        Err(_e) => {
+                            break;
+                        }
+                    }
+                },
+                _ => panic!("What even is this?")
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(e) => {
-                panic!("Client error I also don't fully understand");
+        }
+
+    }
+}
+
+fn run_server() {
+    let mut poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(128);
+
+    let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
+
+    poll.registry().register(&mut listener, SERVER, Interest::READABLE).unwrap();
+
+    let mut msg_count = 0;
+    let mut client_count = 0;
+
+    let mut connections = HashMap::new();
+
+    loop {
+        // The second item contains the IP and port of the new connection.
+        poll.poll(&mut events, None).unwrap();
+
+        for event in events.iter() {
+            match event.token() {
+                SERVER if event.is_readable() => {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let client_token = Token(2 + client_count);
+                    poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    connections.insert(client_token, socket);
+                    client_count += 1;
+                },
+                CLIENT => panic!("Should never happen"),
+                token if event.is_writable() => {
+                    let stream = connections.get_mut(&token).unwrap();
+                    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
+                        Ok(_n) => {
+                            msg_count += 1;
+                            println!("Client {} sent msg {}", token.0, msg_count);
+                            continue;
+                        }
+                        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
+                            continue;
+                        }
+                        Err(_e) => {
+                            break;
+                        }
+                    }
+                }
+                _ => return
             }
         }
     }
 }
 
-async fn run_server() {
-    let listener = TcpListener::bind("127.0.0.1:1337").await.unwrap();
-
-    loop {
-        // The second item contains the IP and port of the new connection.
-        let (socket, _) = listener.accept().await.unwrap();
-
-        tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(1));
-            let mut msg_count = 0;
-            loop {
-                interval.tick().await;
-                socket.writable().await;
-                // Try to write data, this may still fail with `WouldBlock`
-                // if the readiness event is a false positive.
-                match socket.try_write(format!("hello world {}", msg_count).as_bytes()) {
-                    Ok(n) => {
-                        msg_count += 1;
-                        println!("Server sent msg {}", msg_count);
-                        continue;
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        panic!("I have no clue how to handle this or the resulting errors");
-                    }
-                }
-            }
-        });
-    }
-}
-
-#[tokio::main]
-pub async fn main() {
+fn main() {
     let mut client = true;
 
     //I'm not insane enough to start digging into CLI options to begin with
@@ -78,8 +106,8 @@ pub async fn main() {
     }
     println!("Are we a client? {}", client);
     if client {
-        run_client().await;
+        run_client();
     } else {
-        run_server().await;
+        run_server();
     }
 }
