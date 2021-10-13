@@ -1,97 +1,127 @@
 use std::env;
 use std::io;
 use std::io::*;
+use std::prelude::*;
+use std::error::Error;
 use std::collections::HashMap;
 use mio::*;
 use mio::net::*;
 
-const CLIENT: Token = Token(0);
-const SERVER: Token = Token(1);
+const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 
-fn run_client() {
-    let mut poll = Poll::new().unwrap();
+//TODO: Do we want client/server god structs?
+//Creating the hashmap to store TCP streams and listeners is a type punning pain
+//Probably need to just make a custom enum, or Box everything up, or something
+//Point being, handling this in the generic way I _want_ to handle this is not going well
+//Maybe I just make all the handling stuff actually generic based on traits
+//The Mio TCP/Unix listeners are not distinct from streams based on traits though...
+//Probably need some custom wrapping type of something, don't know what yet though
+struct Client {
+    stream: TcpStream,
+    //let mut connections = HashMap::<Token, TcpStream>::new(),
+}
+
+fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
+    let ret = Token(*token_count + 1 + if listener {LISTENER_MASK} else {0});
+    *token_count += 1;
+    return ret;
+}
+
+fn client_read() {
+
+}
+
+fn client_write() {
+
+}
+
+fn server_read() {
+
+}
+
+fn server_write() {
+//    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
+//        Ok(_n) => {
+//            msg_count += 1;
+//            println!("Client {} sent msg {}", connection.0, msg_count);
+//            continue;
+//        }
+//        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
+//            continue;
+//        }
+//        Err(_e) => {
+//            break;
+//        }
+//    }
+}
+
+fn run_event_loop(poll: &mut Poll, token_count: &mut usize, stream: Option<&mut TcpStream>, listener: Option<&mut TcpListener>, is_server: bool) {
     let mut events = Events::with_capacity(128);
-    // Connect to a peer
-    let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
+    let mut connections = HashMap::<Token, TcpStream>::new();
 
-    poll.registry().register(&mut stream, CLIENT, Interest::READABLE | Interest::WRITABLE).unwrap();
-
-    //let mut interval = time::interval(Duration::from_secs(1));
-    let mut msg_count = 0;
     loop {
-        poll.poll(&mut events, None).unwrap();
+        if let Err(e) = poll.poll(&mut events, None) {
+            println!("Poll failed with error {}", e);
+            return;
+        }
 
         for event in events.iter() {
             match event.token() {
-                CLIENT if event.is_writable() => {
-                    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
-                        Ok(_n) => {
-                            msg_count += 1;
-                            println!("Client sent msg {}", msg_count);
-                            continue;
-                        }
-                        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(_e) => {
-                            break;
+                listener_token if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) => {
+                    //let mut listener = connections.get_mut(&listener).unwrap();
+                    let (mut socket, _) = listener.unwrap().accept().unwrap();
+                    let client_token = get_unique_token(token_count, false);
+                    poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    connections.insert(client_token, socket);
+                },
+                connection => {
+                    //let stream = connections.get_mut(&connection).unwrap();
+                    let stream = stream.unwrap();
+                    if event.is_readable() {
+                        if is_server {
+                            server_read();
+                        } else {
+                            client_read();
                         }
                     }
-                },
-                _ => panic!("What even is this?")
+                    if event.is_writable() {
+                        if is_server {
+                            server_write();
+                        } else {
+                            client_write();
+                        }
+                    }
+                }
             }
         }
-
     }
+}
+
+fn run_client() {
+    let mut poll = Poll::new().unwrap();
+    let mut token_count: usize = 0;
+
+    // Connect to a peer
+    let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
+
+    let client_token = get_unique_token(&mut token_count, false);
+
+    poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+
+    run_event_loop(&mut poll, &mut token_count, Some(&mut stream), None, false);
 }
 
 fn run_server() {
     let mut poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(128);
+    let mut token_count: usize = 0;
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
 
-    poll.registry().register(&mut listener, SERVER, Interest::READABLE).unwrap();
+    let listener_token = get_unique_token(&mut token_count, false);
 
-    let mut msg_count = 0;
-    let mut client_count = 0;
+    poll.registry().register(&mut listener, listener_token, Interest::READABLE).unwrap();
 
-    let mut connections = HashMap::new();
-
-    loop {
-        // The second item contains the IP and port of the new connection.
-        poll.poll(&mut events, None).unwrap();
-
-        for event in events.iter() {
-            match event.token() {
-                SERVER if event.is_readable() => {
-                    let (mut socket, _) = listener.accept().unwrap();
-                    let client_token = Token(2 + client_count);
-                    poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-                    connections.insert(client_token, socket);
-                    client_count += 1;
-                },
-                CLIENT => panic!("Should never happen"),
-                token if event.is_writable() => {
-                    let stream = connections.get_mut(&token).unwrap();
-                    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
-                        Ok(_n) => {
-                            msg_count += 1;
-                            println!("Client {} sent msg {}", token.0, msg_count);
-                            continue;
-                        }
-                        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(_e) => {
-                            break;
-                        }
-                    }
-                }
-                _ => return
-            }
-        }
-    }
+    run_event_loop(&mut poll, &mut token_count, None, Some(&mut listener), true);
 }
 
 fn main() {
@@ -111,3 +141,4 @@ fn main() {
         run_server();
     }
 }
+
