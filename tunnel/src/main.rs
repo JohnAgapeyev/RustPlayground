@@ -4,6 +4,7 @@ use std::io::*;
 use std::prelude::*;
 use std::error::Error;
 use std::collections::HashMap;
+use std::cmp::PartialEq;
 use mio::*;
 use mio::net::*;
 
@@ -16,9 +17,19 @@ const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 //Maybe I just make all the handling stuff actually generic based on traits
 //The Mio TCP/Unix listeners are not distinct from streams based on traits though...
 //Probably need some custom wrapping type of something, don't know what yet though
-struct Client {
-    stream: TcpStream,
-    //let mut connections = HashMap::<Token, TcpStream>::new(),
+
+#[derive(PartialEq)]
+enum NetworkRole {
+    CLIENT,
+    SERVER,
+}
+
+struct Network {
+    poll: Poll,
+    listeners: HashMap<Token, TcpListener>,
+    connections: HashMap<Token, TcpStream>,
+    token_count: usize,
+    role: NetworkRole,
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
@@ -27,19 +38,20 @@ fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
     return ret;
 }
 
-fn client_read() {
+fn client_read(stream: &mut TcpStream, ctx: &mut Network) {
+    //let mut stream = ctx.connections.get_mut(&token).unwrap();
+    //stream.write(b"Testing");
+}
+
+fn client_write(ctx: &mut Network) {
 
 }
 
-fn client_write() {
+fn server_read(ctx: &mut Network) {
 
 }
 
-fn server_read() {
-
-}
-
-fn server_write() {
+fn server_write(ctx: &mut Network) {
 //    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
 //        Ok(_n) => {
 //            msg_count += 1;
@@ -55,12 +67,20 @@ fn server_write() {
 //    }
 }
 
-fn run_event_loop(poll: &mut Poll, token_count: &mut usize, stream: Option<&mut TcpStream>, listener: Option<&mut TcpListener>, is_server: bool) {
+fn process_read_event(token: Token, ctx: &mut Network) {
+    let stream = ctx.connections.get_mut(&token).unwrap();
+    client_read(stream, ctx);
+}
+
+fn process_write_event(ctx: &mut Network) {
+
+}
+
+fn run_event_loop(ctx: &mut Network) {
     let mut events = Events::with_capacity(128);
-    let mut connections = HashMap::<Token, TcpStream>::new();
 
     loop {
-        if let Err(e) = poll.poll(&mut events, None) {
+        if let Err(e) = ctx.poll.poll(&mut events, None) {
             println!("Poll failed with error {}", e);
             return;
         }
@@ -68,27 +88,27 @@ fn run_event_loop(poll: &mut Poll, token_count: &mut usize, stream: Option<&mut 
         for event in events.iter() {
             match event.token() {
                 listener_token if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) => {
-                    //let mut listener = connections.get_mut(&listener).unwrap();
-                    let (mut socket, _) = listener.unwrap().accept().unwrap();
-                    let client_token = get_unique_token(token_count, false);
-                    poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-                    connections.insert(client_token, socket);
+                    let listener = ctx.listeners.get_mut(&listener_token).unwrap();
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let client_token = get_unique_token(&mut ctx.token_count, false);
+                    ctx.poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    ctx.connections.insert(client_token, socket);
                 },
-                connection => {
-                    //let stream = connections.get_mut(&connection).unwrap();
-                    let stream = stream.unwrap();
+                connection_token => {
+                    //let mut stream = ctx.connections.get_mut(&connection_token).unwrap();
                     if event.is_readable() {
-                        if is_server {
-                            server_read();
+                        process_read_event(connection_token, ctx);
+                        if ctx.role == NetworkRole::SERVER {
+                            //server_read(ctx);
                         } else {
-                            client_read();
+                            //client_read(connection_token, ctx);
                         }
                     }
                     if event.is_writable() {
-                        if is_server {
-                            server_write();
+                        if ctx.role == NetworkRole::SERVER {
+                            server_write(ctx);
                         } else {
-                            client_write();
+                            client_write(ctx);
                         }
                     }
                 }
@@ -98,30 +118,38 @@ fn run_event_loop(poll: &mut Poll, token_count: &mut usize, stream: Option<&mut 
 }
 
 fn run_client() {
-    let mut poll = Poll::new().unwrap();
-    let mut token_count: usize = 0;
+    let mut ctx = Network {
+        poll: Poll::new().unwrap(),
+        listeners: HashMap::new(),
+        connections: HashMap::new(),
+        role: NetworkRole::CLIENT,
+        token_count: 0,
+    };
 
     // Connect to a peer
     let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
+    let client_token = get_unique_token(&mut ctx.token_count, false);
+    ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+    ctx.connections.insert(client_token, stream);
 
-    let client_token = get_unique_token(&mut token_count, false);
-
-    poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-
-    run_event_loop(&mut poll, &mut token_count, Some(&mut stream), None, false);
+    run_event_loop(&mut ctx);
 }
 
 fn run_server() {
-    let mut poll = Poll::new().unwrap();
-    let mut token_count: usize = 0;
+    let mut ctx = Network {
+        poll: Poll::new().unwrap(),
+        listeners: HashMap::new(),
+        connections: HashMap::new(),
+        role: NetworkRole::SERVER,
+        token_count: 0,
+    };
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
+    let listener_token = get_unique_token(&mut ctx.token_count, false);
+    ctx.poll.registry().register(&mut listener, listener_token, Interest::READABLE).unwrap();
+    ctx.listeners.insert(listener_token, listener);
 
-    let listener_token = get_unique_token(&mut token_count, false);
-
-    poll.registry().register(&mut listener, listener_token, Interest::READABLE).unwrap();
-
-    run_event_loop(&mut poll, &mut token_count, None, Some(&mut listener), true);
+    run_event_loop(&mut ctx);
 }
 
 fn main() {
