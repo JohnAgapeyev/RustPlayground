@@ -24,34 +24,54 @@ enum NetworkRole {
     SERVER,
 }
 
+struct Connection {
+    stream: TcpStream,
+    role: NetworkRole,
+    message_count: u64,
+}
+
 struct Network {
     poll: Poll,
     listeners: HashMap<Token, TcpListener>,
-    connections: HashMap<Token, TcpStream>,
+    connections: HashMap<Token, Connection>,
     token_count: usize,
-    role: NetworkRole,
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
-    let ret = Token(*token_count + 1 + if listener {LISTENER_MASK} else {0});
+    let val = (*token_count + 1 + if listener {LISTENER_MASK} else {0});
+    let ret = Token(val);
     *token_count += 1;
     return ret;
 }
 
-fn client_read(stream: &mut TcpStream, ctx: &mut Network) {
-    //let mut stream = ctx.connections.get_mut(&token).unwrap();
-    //stream.write(b"Testing");
+fn client_read(conn: &mut Connection) {
+    let mut buff = Vec::with_capacity(4096);
+    match conn.stream.read_to_end(&mut buff) {
+        Ok(_) => {}
+        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
+        Err(_) => return
+    }
+    println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
 
-fn client_write(ctx: &mut Network) {
-
+fn client_write(conn: &mut Connection) {
+    conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
+    conn.message_count += 1;
 }
 
-fn server_read(ctx: &mut Network) {
-
+fn server_read(conn: &mut Connection) {
+    let mut buff = Vec::with_capacity(4096);
+    match conn.stream.read_to_end(&mut buff) {
+        Ok(_) => {}
+        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
+        Err(_) => return
+    }
+    println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
 
-fn server_write(ctx: &mut Network) {
+fn server_write(conn: &mut Connection) {
+    conn.stream.write(format!("Server message {}", conn.message_count).as_bytes());
+    conn.message_count += 1;
 //    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
 //        Ok(_n) => {
 //            msg_count += 1;
@@ -67,13 +87,18 @@ fn server_write(ctx: &mut Network) {
 //    }
 }
 
-fn process_read_event(token: Token, ctx: &mut Network) {
-    let stream = ctx.connections.get_mut(&token).unwrap();
-    client_read(stream, ctx);
+fn process_read_event(conn: &mut Connection) {
+    match conn.role {
+        NetworkRole::CLIENT => client_read(conn),
+        NetworkRole::SERVER => server_read(conn),
+    }
 }
 
-fn process_write_event(ctx: &mut Network) {
-
+fn process_write_event(conn: &mut Connection) {
+    match conn.role {
+        NetworkRole::CLIENT => client_write(conn),
+        NetworkRole::SERVER => server_write(conn),
+    }
 }
 
 fn run_event_loop(ctx: &mut Network) {
@@ -89,27 +114,23 @@ fn run_event_loop(ctx: &mut Network) {
             match event.token() {
                 listener_token if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) => {
                     let listener = ctx.listeners.get_mut(&listener_token).unwrap();
-                    let (mut socket, _) = listener.accept().unwrap();
+                    let (mut stream, _) = listener.accept().unwrap();
                     let client_token = get_unique_token(&mut ctx.token_count, false);
-                    ctx.poll.registry().register(&mut socket, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-                    ctx.connections.insert(client_token, socket);
+                    ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    let conn = Connection {
+                        stream,
+                        role: NetworkRole::SERVER,
+                        message_count: 0,
+                    };
+                    ctx.connections.insert(client_token, conn);
                 },
                 connection_token => {
-                    //let mut stream = ctx.connections.get_mut(&connection_token).unwrap();
+                    let mut conn = ctx.connections.get_mut(&connection_token).unwrap();
                     if event.is_readable() {
-                        process_read_event(connection_token, ctx);
-                        if ctx.role == NetworkRole::SERVER {
-                            //server_read(ctx);
-                        } else {
-                            //client_read(connection_token, ctx);
-                        }
+                        process_read_event(conn);
                     }
                     if event.is_writable() {
-                        if ctx.role == NetworkRole::SERVER {
-                            server_write(ctx);
-                        } else {
-                            client_write(ctx);
-                        }
+                        process_write_event(conn);
                     }
                 }
             }
@@ -122,7 +143,6 @@ fn run_client() {
         poll: Poll::new().unwrap(),
         listeners: HashMap::new(),
         connections: HashMap::new(),
-        role: NetworkRole::CLIENT,
         token_count: 0,
     };
 
@@ -130,7 +150,14 @@ fn run_client() {
     let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
     let client_token = get_unique_token(&mut ctx.token_count, false);
     ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-    ctx.connections.insert(client_token, stream);
+
+    let conn = Connection {
+        stream,
+        role: NetworkRole::CLIENT,
+        message_count: 0,
+    };
+
+    ctx.connections.insert(client_token, conn);
 
     run_event_loop(&mut ctx);
 }
@@ -140,12 +167,11 @@ fn run_server() {
         poll: Poll::new().unwrap(),
         listeners: HashMap::new(),
         connections: HashMap::new(),
-        role: NetworkRole::SERVER,
         token_count: 0,
     };
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
-    let listener_token = get_unique_token(&mut ctx.token_count, false);
+    let listener_token = get_unique_token(&mut ctx.token_count, true);
     ctx.poll.registry().register(&mut listener, listener_token, Interest::READABLE).unwrap();
     ctx.listeners.insert(listener_token, listener);
 
