@@ -1,12 +1,14 @@
 use std::env;
 use std::io;
 use std::io::*;
-use std::prelude::*;
-use std::error::Error;
 use std::collections::HashMap;
 use std::cmp::PartialEq;
+use std::convert::TryInto;
 use mio::*;
 use mio::net::*;
+use rand::rngs::OsRng;
+use x25519_dalek::{EphemeralSecret, ReusableSecret, PublicKey};
+use blake2::{Blake2b, Digest};
 
 const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 
@@ -28,6 +30,10 @@ struct Connection {
     stream: TcpStream,
     role: NetworkRole,
     message_count: u64,
+    //Could use StaticSecret if we want serialization for super long term stuff
+    privkey: ReusableSecret,
+    pubkey: PublicKey,
+    shared_key: [u8; 32],
 }
 
 struct Network {
@@ -38,7 +44,7 @@ struct Network {
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
-    let val = (*token_count + 1 + if listener {LISTENER_MASK} else {0});
+    let val = *token_count + 1 + if listener {LISTENER_MASK} else {0};
     let ret = Token(val);
     *token_count += 1;
     return ret;
@@ -55,7 +61,13 @@ fn client_read(conn: &mut Connection) {
 }
 
 fn client_write(conn: &mut Connection) {
-    conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
+    //Doing this as a stand in for "proper" state management enums/types
+    //I don't want to bother with all of that at the moment
+    if conn.message_count == 0 {
+        conn.stream.write(conn.pubkey.as_bytes());
+    } else {
+        conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
+    }
     conn.message_count += 1;
 }
 
@@ -66,7 +78,18 @@ fn server_read(conn: &mut Connection) {
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return
     }
-    println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
+    if conn.message_count == 0 {
+        //Respond to the handshake
+        let data: [u8; 32] = buff[..32].try_into().unwrap();
+        let client_pubkey = PublicKey::from(data);
+        let shared = conn.privkey.diffie_hellman(&client_pubkey);
+        let shared_bytes: [u8; 32] = *shared.as_bytes();
+        //conn.shared_key = Blake2b::digest(&shared_bytes);
+        let res = Blake2b::digest(&shared_bytes);
+        conn.shared_key = res;
+    } else {
+        println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
+    }
 }
 
 fn server_write(conn: &mut Connection) {
@@ -117,10 +140,15 @@ fn run_event_loop(ctx: &mut Network) {
                     let (mut stream, _) = listener.accept().unwrap();
                     let client_token = get_unique_token(&mut ctx.token_count, false);
                     ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    let privkey = ReusableSecret::new(OsRng);
+                    let pubkey = PublicKey::from(&privkey);
                     let conn = Connection {
                         stream,
                         role: NetworkRole::SERVER,
                         message_count: 0,
+                        privkey,
+                        pubkey,
+                        shared_key: [0; 32],
                     };
                     ctx.connections.insert(client_token, conn);
                 },
@@ -151,10 +179,16 @@ fn run_client() {
     let client_token = get_unique_token(&mut ctx.token_count, false);
     ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
 
+    let privkey = ReusableSecret::new(OsRng);
+    let pubkey = PublicKey::from(&privkey);
+
     let conn = Connection {
         stream,
         role: NetworkRole::CLIENT,
         message_count: 0,
+        privkey,
+        pubkey,
+        shared_key: [0; 32],
     };
 
     ctx.connections.insert(client_token, conn);
