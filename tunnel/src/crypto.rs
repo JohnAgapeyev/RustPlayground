@@ -32,25 +32,25 @@ pub fn client_start_handshake(ctx: &CryptoCtx) -> [u8; 32] {
     *ctx.pubkey.as_bytes()
 }
 
-pub fn client_finish_handshake(conn: &mut Connection, data: &[u8; 32]) {
+pub fn client_finish_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) {
     let server_pubkey = PublicKey::from(*data);
-    let shared = conn.crypto.privkey.diffie_hellman(&server_pubkey);
+    let shared = crypto.privkey.diffie_hellman(&server_pubkey);
     let res = Blake2b::digest(&shared.to_bytes());
     //Backwards from the server to ensure equivalent keys
     let (tx, rx) = res.split_at(32);
-    conn.crypto.rx_key = rx.try_into().unwrap();
-    conn.crypto.tx_key = tx.try_into().unwrap();
-    println!("Client is using keys:\n{:02X?}\n{:02X?}", conn.crypto.rx_key, conn.crypto.tx_key);
+    crypto.rx_key = rx.try_into().unwrap();
+    crypto.tx_key = tx.try_into().unwrap();
+    println!("Client is using keys:\n{:02X?}\n{:02X?}", crypto.rx_key, crypto.tx_key);
 }
 
-pub fn server_respond_handshake(conn: &mut Connection, data: &[u8; 32]) -> [u8; 32] {
+pub fn server_respond_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32] {
     let client_pubkey = PublicKey::from(*data);
-    let shared = conn.crypto.privkey.diffie_hellman(&client_pubkey);
+    let shared = crypto.privkey.diffie_hellman(&client_pubkey);
     let res = Blake2b::digest(&shared.to_bytes());
     let (rx, tx) = res.split_at(32);
-    conn.crypto.rx_key = rx.try_into().unwrap();
-    conn.crypto.tx_key = tx.try_into().unwrap();
-    println!("Server is using keys:\n{:02X?}\n{:02X?}", conn.crypto.rx_key, conn.crypto.tx_key);
-    return *conn.crypto.pubkey.as_bytes();
+    crypto.rx_key = rx.try_into().unwrap();
+    crypto.tx_key = tx.try_into().unwrap();
+    println!("Server is using keys:\n{:02X?}\n{:02X?}", crypto.rx_key, crypto.tx_key);
+    return *crypto.pubkey.as_bytes();
 }
 

@@ -26,7 +26,7 @@ enum NetworkRole {
     SERVER,
 }
 
-pub struct Connection {
+struct Connection {
     stream: TcpStream,
     role: NetworkRole,
     message_count: u64,
@@ -58,7 +58,7 @@ fn client_read(conn: &mut Connection) {
         //Respond to the server handshake response
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        client_finish_handshake(conn, &data);
+        client_finish_handshake(&mut conn.crypto, &data);
     }
     //println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
@@ -85,7 +85,7 @@ fn server_read(conn: &mut Connection) {
         //Respond to the handshake
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        let server_response = server_respond_handshake(conn, &data);
+        let server_response = server_respond_handshake(&mut conn.crypto, &data);
         conn.stream.write(&server_response);
     } else {
         //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
