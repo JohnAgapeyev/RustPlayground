@@ -6,13 +6,6 @@ use std::cmp::PartialEq;
 use std::convert::TryInto;
 use mio::*;
 use mio::net::*;
-use rand::rngs::OsRng;
-use x25519_dalek::{EphemeralSecret, ReusableSecret, PublicKey};
-use blake2::Blake2b;
-use blake2::Digest;
-use generic_array::GenericArray;
-use generic_array::typenum::U32;
-use generic_array::typenum::U64;
 
 mod crypto;
 use crate::crypto::*;
@@ -37,11 +30,7 @@ pub struct Connection {
     stream: TcpStream,
     role: NetworkRole,
     message_count: u64,
-    //Could use StaticSecret if we want serialization for super long term stuff
-    privkey: ReusableSecret,
-    pubkey: PublicKey,
-    tx_key: [u8; 32],
-    rx_key: [u8; 32],
+    crypto: CryptoCtx,
 }
 
 struct Network {
@@ -78,7 +67,7 @@ fn client_write(conn: &mut Connection) {
     //Doing this as a stand in for "proper" state management enums/types
     //I don't want to bother with all of that at the moment
     if conn.message_count == 0 {
-        conn.stream.write(&client_start_handshake(conn));
+        conn.stream.write(&client_start_handshake(&conn.crypto));
     } else {
         //conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
     }
@@ -96,7 +85,8 @@ fn server_read(conn: &mut Connection) {
         //Respond to the handshake
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        server_respond_handshake(conn, &data);
+        let server_response = server_respond_handshake(conn, &data);
+        conn.stream.write(&server_response);
     } else {
         //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
     }
@@ -150,16 +140,11 @@ fn run_event_loop(ctx: &mut Network) {
                     let (mut stream, _) = listener.accept().unwrap();
                     let client_token = get_unique_token(&mut ctx.token_count, false);
                     ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
-                    let privkey = ReusableSecret::new(OsRng);
-                    let pubkey = PublicKey::from(&privkey);
                     let conn = Connection {
                         stream,
                         role: NetworkRole::SERVER,
                         message_count: 0,
-                        privkey,
-                        pubkey,
-                        tx_key: [0u8; 32],
-                        rx_key: [0u8; 32],
+                        crypto: CryptoCtx::default(),
                     };
                     ctx.connections.insert(client_token, conn);
                 },
@@ -190,17 +175,11 @@ fn run_client() {
     let client_token = get_unique_token(&mut ctx.token_count, false);
     ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
 
-    let privkey = ReusableSecret::new(OsRng);
-    let pubkey = PublicKey::from(&privkey);
-
     let conn = Connection {
         stream,
         role: NetworkRole::CLIENT,
         message_count: 0,
-        privkey,
-        pubkey,
-        tx_key: [0u8; 32],
-        rx_key: [0u8; 32],
+        crypto: CryptoCtx::default(),
     };
 
     ctx.connections.insert(client_token, conn);
