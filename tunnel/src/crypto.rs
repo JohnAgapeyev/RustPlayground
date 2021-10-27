@@ -1,10 +1,13 @@
-use std::convert::TryInto;
-use rand::rngs::OsRng;
-use x25519_dalek::{EphemeralSecret, ReusableSecret, PublicKey};
 use blake2::Blake2b;
 use blake2::Digest;
+use rand::rngs::OsRng;
+use std::convert::TryInto;
+use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
 
 use crate::Connection;
+
+//TODO: Implement various other parts of crypto
+//AEAD tunnel, symmetric key ratcheting, signatures, KDF
 
 pub struct CryptoCtx {
     //Could use StaticSecret if we want serialization for super long term stuff
@@ -40,7 +43,10 @@ pub fn client_finish_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) {
     let (tx, rx) = res.split_at(32);
     crypto.rx_key = rx.try_into().unwrap();
     crypto.tx_key = tx.try_into().unwrap();
-    println!("Client is using keys:\n{:02X?}\n{:02X?}", crypto.rx_key, crypto.tx_key);
+    println!(
+        "Client is using keys:\n{:02X?}\n{:02X?}",
+        crypto.rx_key, crypto.tx_key
+    );
 }
 
 pub fn server_respond_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32] {
@@ -50,7 +56,9 @@ pub fn server_respond_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8;
     let (rx, tx) = res.split_at(32);
     crypto.rx_key = rx.try_into().unwrap();
     crypto.tx_key = tx.try_into().unwrap();
-    println!("Server is using keys:\n{:02X?}\n{:02X?}", crypto.rx_key, crypto.tx_key);
+    println!(
+        "Server is using keys:\n{:02X?}\n{:02X?}",
+        crypto.rx_key, crypto.tx_key
+    );
     return *crypto.pubkey.as_bytes();
 }
-

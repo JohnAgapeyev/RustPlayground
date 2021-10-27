@@ -1,24 +1,19 @@
+use mio::net::*;
+use mio::*;
+use std::cmp::PartialEq;
+use std::collections::HashMap;
+use std::convert::TryInto;
 use std::env;
 use std::io;
 use std::io::*;
-use std::collections::HashMap;
-use std::cmp::PartialEq;
-use std::convert::TryInto;
-use mio::*;
-use mio::net::*;
 
 mod crypto;
 use crate::crypto::*;
 
 const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 
-//TODO: Do we want client/server god structs?
-//Creating the hashmap to store TCP streams and listeners is a type punning pain
-//Probably need to just make a custom enum, or Box everything up, or something
-//Point being, handling this in the generic way I _want_ to handle this is not going well
-//Maybe I just make all the handling stuff actually generic based on traits
-//The Mio TCP/Unix listeners are not distinct from streams based on traits though...
-//Probably need some custom wrapping type of something, don't know what yet though
+//TODO: Make the handshake more reliable in terms of reading/writing
+//Probably requires proper state handling though, or at least some kinda nice buffer
 
 #[derive(PartialEq)]
 enum NetworkRole {
@@ -41,7 +36,7 @@ struct Network {
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
-    let val = *token_count + 1 + if listener {LISTENER_MASK} else {0};
+    let val = *token_count + 1 + if listener { LISTENER_MASK } else { 0 };
     let ret = Token(val);
     *token_count += 1;
     return ret;
@@ -52,7 +47,7 @@ fn client_read(conn: &mut Connection) {
     match conn.stream.read_to_end(&mut buff) {
         Ok(_) => {}
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
-        Err(_) => return
+        Err(_) => return,
     }
     if conn.message_count == 1 {
         //Respond to the server handshake response
@@ -79,7 +74,7 @@ fn server_read(conn: &mut Connection) {
     match conn.stream.read_to_end(&mut buff) {
         Ok(_) => {}
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
-        Err(_) => return
+        Err(_) => return,
     }
     if conn.message_count == 0 {
         //Respond to the handshake
@@ -95,19 +90,19 @@ fn server_read(conn: &mut Connection) {
 fn server_write(conn: &mut Connection) {
     //conn.stream.write(format!("Server message {}", conn.message_count).as_bytes());
     conn.message_count += 1;
-//    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
-//        Ok(_n) => {
-//            msg_count += 1;
-//            println!("Client {} sent msg {}", connection.0, msg_count);
-//            continue;
-//        }
-//        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
-//            continue;
-//        }
-//        Err(_e) => {
-//            break;
-//        }
-//    }
+    //    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
+    //        Ok(_n) => {
+    //            msg_count += 1;
+    //            println!("Client {} sent msg {}", connection.0, msg_count);
+    //            continue;
+    //        }
+    //        Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {
+    //            continue;
+    //        }
+    //        Err(_e) => {
+    //            break;
+    //        }
+    //    }
 }
 
 fn process_read_event(conn: &mut Connection) {
@@ -135,11 +130,20 @@ fn run_event_loop(ctx: &mut Network) {
 
         for event in events.iter() {
             match event.token() {
-                listener_token if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) => {
+                listener_token
+                    if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) =>
+                {
                     let listener = ctx.listeners.get_mut(&listener_token).unwrap();
                     let (mut stream, _) = listener.accept().unwrap();
                     let client_token = get_unique_token(&mut ctx.token_count, false);
-                    ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+                    ctx.poll
+                        .registry()
+                        .register(
+                            &mut stream,
+                            client_token,
+                            Interest::READABLE | Interest::WRITABLE,
+                        )
+                        .unwrap();
                     let conn = Connection {
                         stream,
                         role: NetworkRole::SERVER,
@@ -147,7 +151,7 @@ fn run_event_loop(ctx: &mut Network) {
                         crypto: CryptoCtx::default(),
                     };
                     ctx.connections.insert(client_token, conn);
-                },
+                }
                 connection_token => {
                     let mut conn = ctx.connections.get_mut(&connection_token).unwrap();
                     if event.is_readable() {
@@ -173,7 +177,14 @@ fn run_client() {
     // Connect to a peer
     let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
     let client_token = get_unique_token(&mut ctx.token_count, false);
-    ctx.poll.registry().register(&mut stream, client_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+    ctx.poll
+        .registry()
+        .register(
+            &mut stream,
+            client_token,
+            Interest::READABLE | Interest::WRITABLE,
+        )
+        .unwrap();
 
     let conn = Connection {
         stream,
@@ -197,7 +208,10 @@ fn run_server() {
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
     let listener_token = get_unique_token(&mut ctx.token_count, true);
-    ctx.poll.registry().register(&mut listener, listener_token, Interest::READABLE).unwrap();
+    ctx.poll
+        .registry()
+        .register(&mut listener, listener_token, Interest::READABLE)
+        .unwrap();
     ctx.listeners.insert(listener_token, listener);
 
     run_event_loop(&mut ctx);
@@ -220,4 +234,3 @@ fn main() {
         run_server();
     }
 }
-
