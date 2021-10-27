@@ -14,6 +14,9 @@ use generic_array::GenericArray;
 use generic_array::typenum::U32;
 use generic_array::typenum::U64;
 
+mod crypto;
+use crate::crypto::*;
+
 const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 
 //TODO: Do we want client/server god structs?
@@ -30,7 +33,7 @@ enum NetworkRole {
     SERVER,
 }
 
-struct Connection {
+pub struct Connection {
     stream: TcpStream,
     role: NetworkRole,
     message_count: u64,
@@ -66,14 +69,7 @@ fn client_read(conn: &mut Connection) {
         //Respond to the server handshake response
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        let server_pubkey = PublicKey::from(data);
-        let shared = conn.privkey.diffie_hellman(&server_pubkey);
-        let res = Blake2b::digest(&shared.to_bytes());
-        //Backwards from the server to ensure equivalent keys
-        let (tx, rx) = res.split_at(32);
-        conn.rx_key = rx.try_into().unwrap();
-        conn.tx_key = tx.try_into().unwrap();
-        println!("Client is using keys:\n{:02X?}\n{:02X?}", conn.rx_key, conn.tx_key);
+        client_finish_handshake(conn, &data);
     }
     //println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
@@ -82,7 +78,7 @@ fn client_write(conn: &mut Connection) {
     //Doing this as a stand in for "proper" state management enums/types
     //I don't want to bother with all of that at the moment
     if conn.message_count == 0 {
-        conn.stream.write(conn.pubkey.as_bytes());
+        conn.stream.write(&client_start_handshake(conn));
     } else {
         //conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
     }
@@ -100,14 +96,7 @@ fn server_read(conn: &mut Connection) {
         //Respond to the handshake
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        let client_pubkey = PublicKey::from(data);
-        let shared = conn.privkey.diffie_hellman(&client_pubkey);
-        let res = Blake2b::digest(&shared.to_bytes());
-        let (rx, tx) = res.split_at(32);
-        conn.rx_key = rx.try_into().unwrap();
-        conn.tx_key = tx.try_into().unwrap();
-        conn.stream.write(conn.pubkey.as_bytes());
-        println!("Server is using keys:\n{:02X?}\n{:02X?}", conn.rx_key, conn.tx_key);
+        server_respond_handshake(conn, &data);
     } else {
         //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
     }
