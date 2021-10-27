@@ -8,7 +8,11 @@ use mio::*;
 use mio::net::*;
 use rand::rngs::OsRng;
 use x25519_dalek::{EphemeralSecret, ReusableSecret, PublicKey};
-use blake2::{Blake2b, Digest};
+use blake2::Blake2b;
+use blake2::Digest;
+use generic_array::GenericArray;
+use generic_array::typenum::U32;
+use generic_array::typenum::U64;
 
 const LISTENER_MASK: usize = 1 << (usize::BITS - 1);
 
@@ -33,7 +37,8 @@ struct Connection {
     //Could use StaticSecret if we want serialization for super long term stuff
     privkey: ReusableSecret,
     pubkey: PublicKey,
-    shared_key: [u8; 32],
+    tx_key: [u8; 32],
+    rx_key: [u8; 32],
 }
 
 struct Network {
@@ -57,7 +62,20 @@ fn client_read(conn: &mut Connection) {
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return
     }
-    println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
+    if conn.message_count == 1 {
+        //Respond to the server handshake response
+        let mut data = [0u8; 32];
+        data.copy_from_slice(&buff[..32]);
+        let server_pubkey = PublicKey::from(data);
+        let shared = conn.privkey.diffie_hellman(&server_pubkey);
+        let res = Blake2b::digest(&shared.to_bytes());
+        //Backwards from the server to ensure equivalent keys
+        let (tx, rx) = res.split_at(32);
+        conn.rx_key = rx.try_into().unwrap();
+        conn.tx_key = tx.try_into().unwrap();
+        println!("Client is using keys:\n{:02X?}\n{:02X?}", conn.rx_key, conn.tx_key);
+    }
+    //println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
 
 fn client_write(conn: &mut Connection) {
@@ -66,7 +84,7 @@ fn client_write(conn: &mut Connection) {
     if conn.message_count == 0 {
         conn.stream.write(conn.pubkey.as_bytes());
     } else {
-        conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
+        //conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
     }
     conn.message_count += 1;
 }
@@ -80,20 +98,23 @@ fn server_read(conn: &mut Connection) {
     }
     if conn.message_count == 0 {
         //Respond to the handshake
-        let data: [u8; 32] = buff[..32].try_into().unwrap();
+        let mut data = [0u8; 32];
+        data.copy_from_slice(&buff[..32]);
         let client_pubkey = PublicKey::from(data);
         let shared = conn.privkey.diffie_hellman(&client_pubkey);
-        let shared_bytes: [u8; 32] = *shared.as_bytes();
-        //conn.shared_key = Blake2b::digest(&shared_bytes);
-        let res = Blake2b::digest(&shared_bytes);
-        conn.shared_key = res;
+        let res = Blake2b::digest(&shared.to_bytes());
+        let (rx, tx) = res.split_at(32);
+        conn.rx_key = rx.try_into().unwrap();
+        conn.tx_key = tx.try_into().unwrap();
+        conn.stream.write(conn.pubkey.as_bytes());
+        println!("Server is using keys:\n{:02X?}\n{:02X?}", conn.rx_key, conn.tx_key);
     } else {
-        println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
+        //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
     }
 }
 
 fn server_write(conn: &mut Connection) {
-    conn.stream.write(format!("Server message {}", conn.message_count).as_bytes());
+    //conn.stream.write(format!("Server message {}", conn.message_count).as_bytes());
     conn.message_count += 1;
 //    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
 //        Ok(_n) => {
@@ -148,7 +169,8 @@ fn run_event_loop(ctx: &mut Network) {
                         message_count: 0,
                         privkey,
                         pubkey,
-                        shared_key: [0; 32],
+                        tx_key: [0u8; 32],
+                        rx_key: [0u8; 32],
                     };
                     ctx.connections.insert(client_token, conn);
                 },
@@ -188,7 +210,8 @@ fn run_client() {
         message_count: 0,
         privkey,
         pubkey,
-        shared_key: [0; 32],
+        tx_key: [0u8; 32],
+        rx_key: [0u8; 32],
     };
 
     ctx.connections.insert(client_token, conn);

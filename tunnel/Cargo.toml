@@ -10,13 +10,15 @@ mio = { version = ">=0.7", features = ["os-poll", "os-ext", "net"]}
 #rustls = "0.20"
 zeroize = ">=1.4"
 rand = { version = ">=0.8", features = ["getrandom", "std"]}
-aead = ">=0.4"
-signature = ">=1.3"
+#aead = ">=0.4"
+#signature = ">=1.3"
 #The stable 1.2 branch has some old dependency versions that are annoying to deal with
 #For example OsRng isn't compatible due to rand_core being too old
 x25519-dalek = { version = ">=2.0.0-pre.1", features = ["reusable_secrets"]}
+#blake2 = { version = ">=0.9", features = ["std"]}
 blake2 = ">=0.9"
-digest = ">=0.9"
+#digest = { version = ">=0.9", features = ["std"]}
+generic-array = ">=0.14"
 
 [profile.release]
 opt-level = 3
