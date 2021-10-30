@@ -15,10 +15,11 @@ rand = { version = ">=0.8", features = ["getrandom", "std"]}
 #The stable 1.2 branch has some old dependency versions that are annoying to deal with
 #For example OsRng isn't compatible due to rand_core being too old
 x25519-dalek = { version = ">=2.0.0-pre.1", features = ["reusable_secrets"]}
-#blake2 = { version = ">=0.9", features = ["std"]}
-blake2 = ">=0.9"
-#digest = { version = ">=0.9", features = ["std"]}
+blake2 = { version = ">=0.9", features = ["std"]}
+digest = { version = ">=0.9", features = ["std"]}
+sha2 = { version = ">=0.9", features = ["std"]}
 generic-array = ">=0.14"
+typenum = ">=1.14"
 
 [profile.release]
 opt-level = 3

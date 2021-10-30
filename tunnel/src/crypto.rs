@@ -1,8 +1,20 @@
 use blake2::Blake2b;
-use blake2::Digest;
+//use blake2::Digest;
+use digest::Digest;
+use digest::FixedOutput;
+use generic_array::typenum::U32;
+use generic_array::typenum::U64;
+use generic_array::typenum::U7;
+use generic_array::ArrayLength;
 use rand::rngs::OsRng;
 use std::convert::TryInto;
 use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
+use typenum::type_operators::Cmp;
+use typenum::type_operators::IsEqual;
+use typenum::type_operators::IsGreaterOrEqual;
+use typenum::operator_aliases::Eq;
+use typenum::True;
+use std::cmp::Ordering;
 
 use crate::Connection;
 
@@ -35,10 +47,21 @@ pub fn client_start_handshake(ctx: &CryptoCtx) -> [u8; 32] {
     *ctx.pubkey.as_bytes()
 }
 
-pub fn client_finish_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) {
+pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32])
+where
+    Hash: Digest,
+    Hash: FixedOutput,
+    Hash: FixedOutput,
+    //<Hash as Digest>::OutputSize: ArrayLength<U64>,
+    //<Hash as Digest>::OutputSize: IsEqual<IsEqual<U64>, Ordering::Equal>
+    //Hash: Eq<Hash::OutputSize, U64>
+    //<Hash as Digest>::OutputSize: IsGreaterOrEqual<U64, Output = True>,
+    //<Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
+    <Hash as Digest>::OutputSize: IsEqual<U32, Output = True>,
+{
     let server_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&server_pubkey);
-    let res = Blake2b::digest(&shared.to_bytes());
+    let res = Hash::digest(&shared.to_bytes());
     //Backwards from the server to ensure equivalent keys
     let (tx, rx) = res.split_at(32);
     crypto.rx_key = rx.try_into().unwrap();
@@ -49,10 +72,16 @@ pub fn client_finish_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) {
     );
 }
 
-pub fn server_respond_handshake(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32] {
+pub fn server_respond_handshake<Hash: Digest + FixedOutput>(
+    crypto: &mut CryptoCtx,
+    data: &[u8; 32],
+) -> [u8; 32]
+where
+    <Hash as Digest>::OutputSize: ArrayLength<U64>,
+{
     let client_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&client_pubkey);
-    let res = Blake2b::digest(&shared.to_bytes());
+    let res = Hash::digest(&shared.to_bytes());
     let (rx, tx) = res.split_at(32);
     crypto.rx_key = rx.try_into().unwrap();
     crypto.tx_key = tx.try_into().unwrap();

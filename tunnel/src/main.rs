@@ -6,6 +6,13 @@ use std::convert::TryInto;
 use std::env;
 use std::io;
 use std::io::*;
+use blake2::Blake2b;
+use blake2::Blake2s;
+use blake2::VarBlake2b;
+use sha2::Sha256;
+use sha2::Sha384;
+use sha2::Sha512;
+use sha2::Sha512Trunc256;
 
 mod crypto;
 use crate::crypto::*;
@@ -53,7 +60,12 @@ fn client_read(conn: &mut Connection) {
         //Respond to the server handshake response
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        client_finish_handshake(&mut conn.crypto, &data);
+        //client_finish_handshake::<Blake2b>(&mut conn.crypto, &data);
+        client_finish_handshake::<Blake2s>(&mut conn.crypto, &data);
+        //client_finish_handshake::<VarBlake2b>(&mut conn.crypto, &data);
+        client_finish_handshake::<Sha256>(&mut conn.crypto, &data);
+        //client_finish_handshake::<Sha512>(&mut conn.crypto, &data);
+        client_finish_handshake::<Sha512Trunc256>(&mut conn.crypto, &data);
     }
     //println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
 }
@@ -80,7 +92,7 @@ fn server_read(conn: &mut Connection) {
         //Respond to the handshake
         let mut data = [0u8; 32];
         data.copy_from_slice(&buff[..32]);
-        let server_response = server_respond_handshake(&mut conn.crypto, &data);
+        let server_response = server_respond_handshake::<Blake2s>(&mut conn.crypto, &data);
         conn.stream.write(&server_response);
     } else {
         //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
