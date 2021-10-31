@@ -33,6 +33,8 @@ struct Connection {
     role: NetworkRole,
     message_count: u64,
     crypto: CryptoCtx,
+    read_buff: Vec<u8>,
+    write_buff: Vec<u8>,
 }
 
 struct Network {
@@ -50,8 +52,7 @@ fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
 }
 
 fn client_read(conn: &mut Connection) {
-    let mut buff = Vec::with_capacity(4096);
-    match conn.stream.read_to_end(&mut buff) {
+    match conn.stream.read_to_end(&mut conn.read_buff) {
         Ok(_) => {}
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return,
@@ -59,7 +60,7 @@ fn client_read(conn: &mut Connection) {
     if conn.message_count == 1 {
         //Respond to the server handshake response
         let mut data = [0u8; 32];
-        data.copy_from_slice(&buff[..32]);
+        data.copy_from_slice(&conn.read_buff[..32]);
         client_finish_handshake::<Blake2b>(&mut conn.crypto, &data);
     }
     //println!("Client got message: \"{}\"", String::from_utf8(buff).unwrap());
@@ -74,11 +75,11 @@ fn client_write(conn: &mut Connection) {
         //conn.stream.write(format!("Client message {}", conn.message_count).as_bytes());
     }
     conn.message_count += 1;
+    println!("Client write");
 }
 
 fn server_read(conn: &mut Connection) {
-    let mut buff = Vec::with_capacity(4096);
-    match conn.stream.read_to_end(&mut buff) {
+    match conn.stream.read_to_end(&mut conn.read_buff) {
         Ok(_) => {}
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return,
@@ -86,17 +87,19 @@ fn server_read(conn: &mut Connection) {
     if conn.message_count == 0 {
         //Respond to the handshake
         let mut data = [0u8; 32];
-        data.copy_from_slice(&buff[..32]);
+        data.copy_from_slice(&conn.read_buff[..32]);
         let server_response = server_respond_handshake::<Blake2b>(&mut conn.crypto, &data);
         conn.stream.write(&server_response);
+        conn.message_count += 1;
     } else {
         //println!("Server got message: \"{}\"", String::from_utf8(buff).unwrap());
     }
 }
 
 fn server_write(conn: &mut Connection) {
+    println!("Server write");
     //conn.stream.write(format!("Server message {}", conn.message_count).as_bytes());
-    conn.message_count += 1;
+    //conn.message_count += 1;
     //    match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
     //        Ok(_n) => {
     //            msg_count += 1;
@@ -156,6 +159,8 @@ fn run_event_loop(ctx: &mut Network) {
                         role: NetworkRole::SERVER,
                         message_count: 0,
                         crypto: CryptoCtx::default(),
+                        read_buff: Vec::with_capacity(4096),
+                        write_buff: Vec::with_capacity(4096),
                     };
                     ctx.connections.insert(client_token, conn);
                 }
@@ -198,6 +203,8 @@ fn run_client() {
         role: NetworkRole::CLIENT,
         message_count: 0,
         crypto: CryptoCtx::default(),
+        read_buff: Vec::with_capacity(4096),
+        write_buff: Vec::with_capacity(4096),
     };
 
     ctx.connections.insert(client_token, conn);
