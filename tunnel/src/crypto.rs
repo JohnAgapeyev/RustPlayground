@@ -1,5 +1,4 @@
 use blake2::Blake2b;
-//use blake2::Digest;
 use digest::Digest;
 use digest::FixedOutput;
 use generic_array::typenum::U32;
@@ -7,14 +6,14 @@ use generic_array::typenum::U64;
 use generic_array::typenum::U7;
 use generic_array::ArrayLength;
 use rand::rngs::OsRng;
+use std::cmp::Ordering;
 use std::convert::TryInto;
-use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
+use typenum::operator_aliases::Eq;
 use typenum::type_operators::Cmp;
 use typenum::type_operators::IsEqual;
 use typenum::type_operators::IsGreaterOrEqual;
-use typenum::operator_aliases::Eq;
 use typenum::True;
-use std::cmp::Ordering;
+use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
 
 use crate::Connection;
 
@@ -51,13 +50,7 @@ pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32])
 where
     Hash: Digest,
     Hash: FixedOutput,
-    Hash: FixedOutput,
-    //<Hash as Digest>::OutputSize: ArrayLength<U64>,
-    //<Hash as Digest>::OutputSize: IsEqual<IsEqual<U64>, Ordering::Equal>
-    //Hash: Eq<Hash::OutputSize, U64>
-    //<Hash as Digest>::OutputSize: IsGreaterOrEqual<U64, Output = True>,
-    //<Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
-    <Hash as Digest>::OutputSize: IsEqual<U32, Output = True>,
+    <Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
 {
     let server_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&server_pubkey);
@@ -72,12 +65,11 @@ where
     );
 }
 
-pub fn server_respond_handshake<Hash: Digest + FixedOutput>(
-    crypto: &mut CryptoCtx,
-    data: &[u8; 32],
-) -> [u8; 32]
+pub fn server_respond_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32]
 where
-    <Hash as Digest>::OutputSize: ArrayLength<U64>,
+    Hash: Digest,
+    Hash: FixedOutput,
+    <Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
 {
     let client_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&client_pubkey);
