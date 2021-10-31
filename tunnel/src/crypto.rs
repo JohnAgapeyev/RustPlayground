@@ -49,8 +49,7 @@ pub fn client_start_handshake(ctx: &CryptoCtx) -> [u8; 32] {
 pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32])
 where
     Hash: Digest,
-    Hash: FixedOutput,
-    <Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
+    Hash::OutputSize: IsEqual<U64, Output = True>,
 {
     let server_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&server_pubkey);
@@ -68,8 +67,7 @@ where
 pub fn server_respond_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32]
 where
     Hash: Digest,
-    Hash: FixedOutput,
-    <Hash as Digest>::OutputSize: IsEqual<U64, Output = True>,
+    Hash::OutputSize: IsEqual<U64, Output = True>,
 {
     let client_pubkey = PublicKey::from(*data);
     let shared = crypto.privkey.diffie_hellman(&client_pubkey);
