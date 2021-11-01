@@ -1,6 +1,9 @@
 use blake2::Blake2b;
 use blake2::Blake2s;
 use blake2::VarBlake2b;
+use chacha20poly1305::XChaCha20Poly1305;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::Aes128Gcm;
 use mio::net::*;
 use mio::*;
 use sha2::Sha256;
@@ -98,7 +101,7 @@ fn client_read(conn: &mut Connection) {
                     return;
                 }
                 let plaintext =
-                    decrypt_message(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
+                    decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
                 println!(
                     "Client got message: \"{}\"",
                     //String::from_utf8(conn.read_buff.clone()).unwrap()
@@ -121,7 +124,7 @@ fn client_write(conn: &mut Connection) {
         HandshakeState::RESPONSE => panic!("Should never happen"),
         HandshakeState::LEN | HandshakeState::DATA => {
             let plaintext = format!("Client message {}", conn.message_count);
-            let ciphertext = encrypt_message(&mut conn.crypto, plaintext.as_bytes());
+            let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, plaintext.as_bytes());
             //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
             conn.stream.write(&ciphertext.len().to_be_bytes());
             conn.stream.write(&ciphertext);
@@ -172,7 +175,7 @@ fn server_read(conn: &mut Connection) {
                     return;
                 }
                 let plaintext =
-                    decrypt_message(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
+                    decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
                 println!(
                     "Server got message: \"{}\"",
                     //String::from_utf8(conn.read_buff.clone()).unwrap()
@@ -195,7 +198,7 @@ fn server_write(conn: &mut Connection) {
     if conn.handshake_state == HandshakeState::LEN {
         //println!("Server write");
         let plaintext = format!("Server message {}", conn.message_count);
-        let ciphertext = encrypt_message(&mut conn.crypto, plaintext.as_bytes());
+        let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, plaintext.as_bytes());
         //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
         conn.stream.write(&ciphertext.len().to_be_bytes());
         conn.stream.write(&ciphertext);

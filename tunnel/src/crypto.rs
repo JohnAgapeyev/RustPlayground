@@ -1,9 +1,13 @@
+use aead::{Aead, Key, NewAead, Nonce};
+use aes_gcm::Aes256Gcm;
 use blake2::Blake2b;
+use chacha20poly1305::XChaCha20Poly1305;
 use digest::Digest;
 use digest::FixedOutput;
+use generic_array::typenum::U12;
+use generic_array::typenum::U24;
 use generic_array::typenum::U32;
 use generic_array::typenum::U64;
-use generic_array::typenum::U7;
 use generic_array::ArrayLength;
 use rand::rngs::OsRng;
 use std::cmp::Ordering;
@@ -14,9 +18,6 @@ use typenum::type_operators::IsEqual;
 use typenum::type_operators::IsGreaterOrEqual;
 use typenum::True;
 use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
-use chacha20poly1305::XChaCha20Poly1305;
-use aes_gcm::Aes256Gcm;
-use aead::{NewAead, Aead, Key, Nonce};
 
 use crate::Connection;
 
@@ -89,30 +90,46 @@ where
     return *crypto.pubkey.as_bytes();
 }
 
-pub fn encrypt_message(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8> {
-    let key = Key::<XChaCha20Poly1305>::from_slice(&crypto.tx_key);
-    let cipher = XChaCha20Poly1305::new(key);
+pub fn encrypt_message<Cipher>(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8>
+where
+    Cipher: NewAead,
+    Cipher: Aead,
+    Cipher::KeySize: IsEqual<U32, Output = True>,
+    //TODO: Should probably redo nonce generation to be generic enough for things like AES-GCM that use 96 bit nonces
+    Cipher::NonceSize: IsEqual<U24, Output = True>,
+{
+    let key = Key::<Cipher>::from_slice(&crypto.tx_key);
+    let cipher = Cipher::new(key);
     let nonce_contents = format!("Nonce{:0>19}", crypto.tx_counter);
     println!("Encrypting with nonce:\n{:02X?}", nonce_contents);
-    let nonce = Nonce::<XChaCha20Poly1305>::from_slice(nonce_contents.as_bytes());
+    let nonce = Nonce::<Cipher>::from_slice(nonce_contents.as_bytes());
     if crypto.tx_counter != u64::MAX {
         crypto.tx_counter += 1;
     } else {
         panic!("Tx counter overflow");
     }
+    //TODO: Probably shouldn't panic on failure
     cipher.encrypt(nonce, data).unwrap()
 }
 
-pub fn decrypt_message(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8> {
-    let key = Key::<XChaCha20Poly1305>::from_slice(&crypto.rx_key);
-    let cipher = XChaCha20Poly1305::new(key);
+pub fn decrypt_message<Cipher>(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8>
+where
+    Cipher: NewAead,
+    Cipher: Aead,
+    Cipher::KeySize: IsEqual<U32, Output = True>,
+    //TODO: Should probably redo nonce generation to be generic enough for things like AES-GCM that use 96 bit nonces
+    Cipher::NonceSize: IsEqual<U24, Output = True>,
+{
+    let key = Key::<Cipher>::from_slice(&crypto.rx_key);
+    let cipher = Cipher::new(key);
     let nonce_contents = format!("Nonce{:0>19}", crypto.rx_counter);
     println!("Decrypting with nonce:\n{:02X?}", nonce_contents);
-    let nonce = Nonce::<XChaCha20Poly1305>::from_slice(nonce_contents.as_bytes());
+    let nonce = Nonce::<Cipher>::from_slice(nonce_contents.as_bytes());
     if crypto.rx_counter != u64::MAX {
         crypto.rx_counter += 1;
     } else {
         panic!("Tx counter overflow");
     }
+    //TODO: Probably shouldn't panic on failure
     cipher.decrypt(nonce, data).unwrap()
 }
