@@ -14,6 +14,9 @@ use typenum::type_operators::IsEqual;
 use typenum::type_operators::IsGreaterOrEqual;
 use typenum::True;
 use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
+use chacha20poly1305::XChaCha20Poly1305;
+use aes_gcm::Aes256Gcm;
+use aead::{NewAead, Aead, Key, Nonce};
 
 use crate::Connection;
 
@@ -26,6 +29,8 @@ pub struct CryptoCtx {
     pubkey: PublicKey,
     tx_key: [u8; 32],
     rx_key: [u8; 32],
+    tx_counter: u64,
+    rx_counter: u64,
 }
 
 impl Default for CryptoCtx {
@@ -37,6 +42,8 @@ impl Default for CryptoCtx {
             pubkey,
             tx_key: [0u8; 32],
             rx_key: [0u8; 32],
+            tx_counter: 0,
+            rx_counter: 0,
         }
     }
 }
@@ -80,4 +87,32 @@ where
         crypto.rx_key, crypto.tx_key
     );
     return *crypto.pubkey.as_bytes();
+}
+
+pub fn encrypt_message(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8> {
+    let key = Key::<XChaCha20Poly1305>::from_slice(&crypto.tx_key);
+    let cipher = XChaCha20Poly1305::new(key);
+    let nonce_contents = format!("Nonce{:0>19}", crypto.tx_counter);
+    println!("Encrypting with nonce:\n{:02X?}", nonce_contents);
+    let nonce = Nonce::<XChaCha20Poly1305>::from_slice(nonce_contents.as_bytes());
+    if crypto.tx_counter != u64::MAX {
+        crypto.tx_counter += 1;
+    } else {
+        panic!("Tx counter overflow");
+    }
+    cipher.encrypt(nonce, data).unwrap()
+}
+
+pub fn decrypt_message(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8> {
+    let key = Key::<XChaCha20Poly1305>::from_slice(&crypto.rx_key);
+    let cipher = XChaCha20Poly1305::new(key);
+    let nonce_contents = format!("Nonce{:0>19}", crypto.rx_counter);
+    println!("Decrypting with nonce:\n{:02X?}", nonce_contents);
+    let nonce = Nonce::<XChaCha20Poly1305>::from_slice(nonce_contents.as_bytes());
+    if crypto.rx_counter != u64::MAX {
+        crypto.rx_counter += 1;
+    } else {
+        panic!("Tx counter overflow");
+    }
+    cipher.decrypt(nonce, data).unwrap()
 }
