@@ -32,6 +32,7 @@ enum NetworkRole {
 #[derive(PartialEq)]
 enum HandshakeState {
     INIT,
+    INIT_LEN,
     RESPONSE,
     LEN,
     DATA,
@@ -70,21 +71,31 @@ fn client_read(conn: &mut Connection) {
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return,
     }
+    if conn.read_buff.len() == 0 {
+        return;
+    }
     while need_processing == true {
         need_processing = false;
         match conn.handshake_state {
             HandshakeState::INIT => panic!("Should never happen"),
-            HandshakeState::RESPONSE => {
-                //TODO: If we do it this way, need to eliminate magic number
-                if conn.read_buff.len() < 32 {
-                    //Not enough data
-                    return;
-                }
+            HandshakeState::INIT_LEN => {
                 //Respond to the server handshake response
-                let mut data = [0u8; 32];
-                data.copy_from_slice(&conn.read_buff[..32]);
-                conn.read_buff.drain(..32);
-                client_finish_handshake::<Blake2b>(&mut conn.crypto, &data);
+                let size_size = size_of::<usize>();
+                conn.packet_len =
+                    usize::from_be_bytes(conn.read_buff[..size_size].try_into().unwrap());
+                conn.read_buff.drain(..size_size);
+                conn.handshake_state = HandshakeState::RESPONSE;
+                if conn.read_buff.len() > 0 {
+                    need_processing = true;
+                }
+            }
+            HandshakeState::RESPONSE => {
+                //Respond to the handshake
+                println!("Packet len is {}", conn.packet_len);
+                println!("Buffer is {:02X?}", conn.read_buff);
+                let response = serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
+                client_finish_handshake::<Blake2b>(&mut conn.crypto, &response);
+                conn.read_buff.drain(..conn.packet_len);
                 conn.handshake_state = HandshakeState::LEN;
             }
             HandshakeState::LEN => {
@@ -118,10 +129,13 @@ fn client_read(conn: &mut Connection) {
 fn client_write(conn: &mut Connection) {
     match conn.handshake_state {
         HandshakeState::INIT => {
-            conn.stream.write(&client_start_handshake(&conn.crypto));
-            conn.handshake_state = HandshakeState::RESPONSE;
+            let serialized = serde_json::to_vec(&client_start_handshake(&conn.crypto)).unwrap();
+            conn.stream.write(&serialized.len().to_be_bytes());
+            conn.stream.write(&serialized);
+            conn.handshake_state = HandshakeState::INIT_LEN;
         }
-        HandshakeState::RESPONSE => panic!("Should never happen"),
+        HandshakeState::INIT_LEN => {}
+        HandshakeState::RESPONSE => {}
         HandshakeState::LEN | HandshakeState::DATA => {
             let plaintext = format!("Client message {}", conn.message_count);
             let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, plaintext.as_bytes());
@@ -142,21 +156,33 @@ fn server_read(conn: &mut Connection) {
         Err(ref _e) if _e.kind() == io::ErrorKind::WouldBlock => {}
         Err(_) => return,
     }
+    if conn.read_buff.len() == 0 {
+        return;
+    }
     while need_processing == true {
         need_processing = false;
         match conn.handshake_state {
             HandshakeState::INIT => {
-                //TODO: If we do it this way, need to eliminate magic number
-                if conn.read_buff.len() < 32 {
-                    //Not enough data
-                    return;
+                //Respond to the server handshake response
+                let size_size = size_of::<usize>();
+                conn.packet_len =
+                    usize::from_be_bytes(conn.read_buff[..size_size].try_into().unwrap());
+                conn.read_buff.drain(..size_size);
+                conn.handshake_state = HandshakeState::INIT_LEN;
+                if conn.read_buff.len() > 0 {
+                    need_processing = true;
                 }
+            }
+            HandshakeState::INIT_LEN => {
                 //Respond to the handshake
-                let mut data = [0u8; 32];
-                data.copy_from_slice(&conn.read_buff[..32]);
-                conn.read_buff.drain(..32);
-                let server_response = server_respond_handshake::<Blake2b>(&mut conn.crypto, &data);
-                conn.stream.write(&server_response);
+                println!("Packet len is {}", conn.packet_len);
+                println!("Buffer is {:02X?}", conn.read_buff);
+                let client_handshake = serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
+                let server_response = server_respond_handshake::<Blake2b>(&mut conn.crypto, &client_handshake);
+                let serialized = serde_json::to_vec(&server_response).unwrap();
+                conn.stream.write(&serialized.len().to_be_bytes());
+                conn.stream.write(&serialized);
+                conn.read_buff.drain(..conn.packet_len);
                 conn.message_count += 1;
                 conn.handshake_state = HandshakeState::LEN;
             }
@@ -192,6 +218,7 @@ fn server_read(conn: &mut Connection) {
 fn server_write(conn: &mut Connection) {
     match conn.handshake_state {
         HandshakeState::INIT => {}
+        HandshakeState::INIT_LEN => {}
         HandshakeState::RESPONSE => {}
         HandshakeState::LEN | HandshakeState::DATA => {}
     }

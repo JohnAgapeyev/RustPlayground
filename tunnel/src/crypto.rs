@@ -18,6 +18,7 @@ use typenum::type_operators::IsEqual;
 use typenum::type_operators::IsGreaterOrEqual;
 use typenum::True;
 use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
+use serde::{Serialize, Deserialize};
 
 use crate::Connection;
 
@@ -32,6 +33,16 @@ pub struct CryptoCtx {
     rx_key: [u8; 32],
     tx_counter: u64,
     rx_counter: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ClientHandshake {
+    pubkey: PublicKey,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServerHandshake {
+    pubkey: PublicKey,
 }
 
 impl Default for CryptoCtx {
@@ -50,17 +61,18 @@ impl Default for CryptoCtx {
 }
 
 //Just return the pubkey since I don't need anything more complex at this time
-pub fn client_start_handshake(ctx: &CryptoCtx) -> [u8; 32] {
-    *ctx.pubkey.as_bytes()
+pub fn client_start_handshake(ctx: &CryptoCtx) -> ClientHandshake {
+    ClientHandshake {
+        pubkey: ctx.pubkey,
+    }
 }
 
-pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32])
+pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, response: &ServerHandshake)
 where
     Hash: Digest,
     Hash::OutputSize: IsEqual<U64, Output = True>,
 {
-    let server_pubkey = PublicKey::from(*data);
-    let shared = crypto.privkey.diffie_hellman(&server_pubkey);
+    let shared = crypto.privkey.diffie_hellman(&response.pubkey);
     let res = Hash::digest(&shared.to_bytes());
     //Backwards from the server to ensure equivalent keys
     let (tx, rx) = res.split_at(32);
@@ -72,13 +84,12 @@ where
     );
 }
 
-pub fn server_respond_handshake<Hash>(crypto: &mut CryptoCtx, data: &[u8; 32]) -> [u8; 32]
+pub fn server_respond_handshake<Hash>(crypto: &mut CryptoCtx, client: &ClientHandshake) -> ServerHandshake
 where
     Hash: Digest,
     Hash::OutputSize: IsEqual<U64, Output = True>,
 {
-    let client_pubkey = PublicKey::from(*data);
-    let shared = crypto.privkey.diffie_hellman(&client_pubkey);
+    let shared = crypto.privkey.diffie_hellman(&client.pubkey);
     let res = Hash::digest(&shared.to_bytes());
     let (rx, tx) = res.split_at(32);
     crypto.rx_key = rx.try_into().unwrap();
@@ -87,7 +98,9 @@ where
         "Server is using keys:\n{:02X?}\n{:02X?}",
         crypto.rx_key, crypto.tx_key
     );
-    return *crypto.pubkey.as_bytes();
+    return ServerHandshake {
+        pubkey: crypto.pubkey,
+    };
 }
 
 pub fn encrypt_message<Cipher>(crypto: &mut CryptoCtx, data: &[u8]) -> Vec<u8>
