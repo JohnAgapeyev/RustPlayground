@@ -10,6 +10,7 @@ use generic_array::typenum::U32;
 use generic_array::typenum::U64;
 use generic_array::ArrayLength;
 use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use typenum::operator_aliases::Eq;
@@ -18,7 +19,6 @@ use typenum::type_operators::IsEqual;
 use typenum::type_operators::IsGreaterOrEqual;
 use typenum::True;
 use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
-use serde::{Serialize, Deserialize};
 
 use crate::Connection;
 
@@ -62,9 +62,7 @@ impl Default for CryptoCtx {
 
 //Just return the pubkey since I don't need anything more complex at this time
 pub fn client_start_handshake(ctx: &CryptoCtx) -> ClientHandshake {
-    ClientHandshake {
-        pubkey: ctx.pubkey,
-    }
+    ClientHandshake { pubkey: ctx.pubkey }
 }
 
 pub fn client_finish_handshake<Hash>(crypto: &mut CryptoCtx, response: &ServerHandshake)
@@ -84,7 +82,10 @@ where
     );
 }
 
-pub fn server_respond_handshake<Hash>(crypto: &mut CryptoCtx, client: &ClientHandshake) -> ServerHandshake
+pub fn server_respond_handshake<Hash>(
+    crypto: &mut CryptoCtx,
+    client: &ClientHandshake,
+) -> ServerHandshake
 where
     Hash: Digest,
     Hash::OutputSize: IsEqual<U64, Output = True>,

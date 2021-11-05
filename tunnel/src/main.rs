@@ -1,11 +1,12 @@
+use aes_gcm::Aes128Gcm;
+use aes_gcm::Aes256Gcm;
 use blake2::Blake2b;
 use blake2::Blake2s;
 use blake2::VarBlake2b;
 use chacha20poly1305::XChaCha20Poly1305;
-use aes_gcm::Aes256Gcm;
-use aes_gcm::Aes128Gcm;
 use mio::net::*;
 use mio::*;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sha2::Sha384;
 use sha2::Sha512;
@@ -17,7 +18,6 @@ use std::env;
 use std::io;
 use std::io::*;
 use std::mem::size_of;
-use serde::{Serialize, Deserialize};
 
 mod crypto;
 use crate::crypto::*;
@@ -117,12 +117,12 @@ fn client_read(conn: &mut Connection) {
                     //Not enough data
                     return;
                 }
-                let plaintext =
-                    decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
-                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
-                println!(
-                    "Client got message: \"{:?}\"", &response
+                let plaintext = decrypt_message::<XChaCha20Poly1305>(
+                    &mut conn.crypto,
+                    &conn.read_buff[..conn.packet_len],
                 );
+                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
+                println!("Client got message: \"{:?}\"", &response);
                 conn.read_buff.drain(..conn.packet_len);
                 conn.handshake_state = HandshakeState::LEN;
                 conn.packet_len = 0;
@@ -160,7 +160,11 @@ fn client_write(conn: &mut Connection) {
     //println!("Client write");
 }
 
-fn server_read(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>) {
+fn server_read(
+    conn: &mut Connection,
+    ctx: &mut Network,
+    listeners: &mut HashMap<Token, TcpListener>,
+) {
     //TODO: This is a hack for len->data packetization, needs a better solution eventually
     let mut need_processing = true;
     match conn.stream.read_to_end(&mut conn.read_buff) {
@@ -187,8 +191,10 @@ fn server_read(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap
             }
             HandshakeState::INIT_LEN => {
                 //Respond to the handshake
-                let client_handshake = serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
-                let server_response = server_respond_handshake::<Blake2b>(&mut conn.crypto, &client_handshake);
+                let client_handshake =
+                    serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
+                let server_response =
+                    server_respond_handshake::<Blake2b>(&mut conn.crypto, &client_handshake);
                 let serialized = serde_json::to_vec(&server_response).unwrap();
                 conn.stream.write(&serialized.len().to_be_bytes());
                 conn.stream.write(&serialized);
@@ -210,17 +216,18 @@ fn server_read(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap
                     //Not enough data
                     return;
                 }
-                let plaintext =
-                    decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
-                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
-                println!(
-                    "Server got message: \"{:?}\"", &response
+                let plaintext = decrypt_message::<XChaCha20Poly1305>(
+                    &mut conn.crypto,
+                    &conn.read_buff[..conn.packet_len],
                 );
+                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
+                println!("Server got message: \"{:?}\"", &response);
                 conn.read_buff.drain(..conn.packet_len);
                 conn.handshake_state = HandshakeState::LEN;
                 conn.packet_len = 0;
                 if response.test == true && ctx.recv_test == false {
-                    let mut listener = TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
+                    let mut listener =
+                        TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
                     let listener_token = get_unique_token(&mut ctx.token_count, true);
                     ctx.poll
                         .registry()
@@ -272,7 +279,11 @@ fn server_write(conn: &mut Connection) {
     }
 }
 
-fn process_read_event(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>) {
+fn process_read_event(
+    conn: &mut Connection,
+    ctx: &mut Network,
+    listeners: &mut HashMap<Token, TcpListener>,
+) {
     match conn.role {
         NetworkRole::CLIENT => client_read(conn),
         NetworkRole::SERVER => server_read(conn, ctx, listeners),
@@ -286,7 +297,11 @@ fn process_write_event(conn: &mut Connection) {
     }
 }
 
-fn run_event_loop(ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>, connections: &mut HashMap<Token, Connection>) {
+fn run_event_loop(
+    ctx: &mut Network,
+    listeners: &mut HashMap<Token, TcpListener>,
+    connections: &mut HashMap<Token, Connection>,
+) {
     let mut events = Events::with_capacity(128);
 
     loop {
