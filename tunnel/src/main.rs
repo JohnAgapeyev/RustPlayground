@@ -17,6 +17,7 @@ use std::env;
 use std::io;
 use std::io::*;
 use std::mem::size_of;
+use serde::{Serialize, Deserialize};
 
 mod crypto;
 use crate::crypto::*;
@@ -31,11 +32,18 @@ enum NetworkRole {
 
 #[derive(PartialEq)]
 enum HandshakeState {
+    //TODO: This really is a mess, but oh well, not worth fixing atm
     INIT,
     INIT_LEN,
     RESPONSE,
     LEN,
     DATA,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TestMessage {
+    test: bool,
+    msg: String,
 }
 
 struct Connection {
@@ -47,13 +55,13 @@ struct Connection {
     write_buff: Vec<u8>,
     handshake_state: HandshakeState,
     packet_len: usize,
+    sent_test: bool,
 }
 
 struct Network {
     poll: Poll,
-    listeners: HashMap<Token, TcpListener>,
-    connections: HashMap<Token, Connection>,
     token_count: usize,
+    recv_test: bool,
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
@@ -91,8 +99,6 @@ fn client_read(conn: &mut Connection) {
             }
             HandshakeState::RESPONSE => {
                 //Respond to the handshake
-                println!("Packet len is {}", conn.packet_len);
-                println!("Buffer is {:02X?}", conn.read_buff);
                 let response = serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
                 client_finish_handshake::<Blake2b>(&mut conn.crypto, &response);
                 conn.read_buff.drain(..conn.packet_len);
@@ -113,10 +119,9 @@ fn client_read(conn: &mut Connection) {
                 }
                 let plaintext =
                     decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
+                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
                 println!(
-                    "Client got message: \"{}\"",
-                    //String::from_utf8(conn.read_buff.clone()).unwrap()
-                    String::from_utf8(plaintext.clone()).unwrap()
+                    "Client got message: \"{:?}\"", &response
                 );
                 conn.read_buff.drain(..conn.packet_len);
                 conn.handshake_state = HandshakeState::LEN;
@@ -137,18 +142,25 @@ fn client_write(conn: &mut Connection) {
         HandshakeState::INIT_LEN => {}
         HandshakeState::RESPONSE => {}
         HandshakeState::LEN | HandshakeState::DATA => {
-            let plaintext = format!("Client message {}", conn.message_count);
-            let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, plaintext.as_bytes());
+            let message = TestMessage {
+                test: if conn.sent_test == false { true } else { false },
+                msg: format!("Client message {}", conn.message_count),
+            };
+            let plaintext = serde_json::to_vec(&message).unwrap();
+            let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &plaintext);
             //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
             conn.stream.write(&ciphertext.len().to_be_bytes());
             conn.stream.write(&ciphertext);
             conn.message_count += 1;
+            if conn.sent_test == false {
+                conn.sent_test = true;
+            }
         }
     }
     //println!("Client write");
 }
 
-fn server_read(conn: &mut Connection) {
+fn server_read(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>) {
     //TODO: This is a hack for len->data packetization, needs a better solution eventually
     let mut need_processing = true;
     match conn.stream.read_to_end(&mut conn.read_buff) {
@@ -175,8 +187,6 @@ fn server_read(conn: &mut Connection) {
             }
             HandshakeState::INIT_LEN => {
                 //Respond to the handshake
-                println!("Packet len is {}", conn.packet_len);
-                println!("Buffer is {:02X?}", conn.read_buff);
                 let client_handshake = serde_json::from_slice(&conn.read_buff[..conn.packet_len]).unwrap();
                 let server_response = server_respond_handshake::<Blake2b>(&mut conn.crypto, &client_handshake);
                 let serialized = serde_json::to_vec(&server_response).unwrap();
@@ -202,14 +212,23 @@ fn server_read(conn: &mut Connection) {
                 }
                 let plaintext =
                     decrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &conn.read_buff[..conn.packet_len]);
+                let response: TestMessage = serde_json::from_slice(&plaintext).unwrap();
                 println!(
-                    "Server got message: \"{}\"",
-                    //String::from_utf8(conn.read_buff.clone()).unwrap()
-                    String::from_utf8(plaintext.clone()).unwrap()
+                    "Server got message: \"{:?}\"", &response
                 );
                 conn.read_buff.drain(..conn.packet_len);
                 conn.handshake_state = HandshakeState::LEN;
                 conn.packet_len = 0;
+                if response.test == true && ctx.recv_test == false {
+                    let mut listener = TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
+                    let listener_token = get_unique_token(&mut ctx.token_count, true);
+                    ctx.poll
+                        .registry()
+                        .register(&mut listener, listener_token, Interest::READABLE)
+                        .unwrap();
+                    listeners.insert(listener_token, listener);
+                    ctx.recv_test = true;
+                }
             }
         }
     }
@@ -224,12 +243,19 @@ fn server_write(conn: &mut Connection) {
     }
     if conn.handshake_state == HandshakeState::LEN {
         //println!("Server write");
-        let plaintext = format!("Server message {}", conn.message_count);
-        let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, plaintext.as_bytes());
+        let message = TestMessage {
+            test: if conn.sent_test == false { true } else { false },
+            msg: format!("Server message {}", conn.message_count),
+        };
+        let plaintext = serde_json::to_vec(&message).unwrap();
+        let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &plaintext);
         //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
         conn.stream.write(&ciphertext.len().to_be_bytes());
         conn.stream.write(&ciphertext);
         conn.message_count += 1;
+        if conn.sent_test == false {
+            conn.sent_test = true;
+        }
         //match stream.write(format!("goodbye world {}", msg_count).as_bytes()) {
         //    Ok(_n) => {
         //        msg_count += 1;
@@ -246,10 +272,10 @@ fn server_write(conn: &mut Connection) {
     }
 }
 
-fn process_read_event(conn: &mut Connection) {
+fn process_read_event(conn: &mut Connection, ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>) {
     match conn.role {
         NetworkRole::CLIENT => client_read(conn),
-        NetworkRole::SERVER => server_read(conn),
+        NetworkRole::SERVER => server_read(conn, ctx, listeners),
     }
 }
 
@@ -260,7 +286,7 @@ fn process_write_event(conn: &mut Connection) {
     }
 }
 
-fn run_event_loop(ctx: &mut Network) {
+fn run_event_loop(ctx: &mut Network, listeners: &mut HashMap<Token, TcpListener>, connections: &mut HashMap<Token, Connection>) {
     let mut events = Events::with_capacity(128);
 
     loop {
@@ -274,7 +300,7 @@ fn run_event_loop(ctx: &mut Network) {
                 listener_token
                     if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) =>
                 {
-                    let listener = ctx.listeners.get_mut(&listener_token).unwrap();
+                    let listener = listeners.get_mut(&listener_token).unwrap();
                     let (mut stream, _) = listener.accept().unwrap();
                     let client_token = get_unique_token(&mut ctx.token_count, false);
                     ctx.poll
@@ -294,13 +320,14 @@ fn run_event_loop(ctx: &mut Network) {
                         write_buff: Vec::with_capacity(4096),
                         handshake_state: HandshakeState::INIT,
                         packet_len: 0,
+                        sent_test: false,
                     };
-                    ctx.connections.insert(client_token, conn);
+                    connections.insert(client_token, conn);
                 }
                 connection_token => {
-                    let mut conn = ctx.connections.get_mut(&connection_token).unwrap();
+                    let mut conn = connections.get_mut(&connection_token).unwrap();
                     if event.is_readable() {
-                        process_read_event(conn);
+                        process_read_event(conn, ctx, listeners);
                     }
                     if event.is_writable() {
                         process_write_event(conn);
@@ -311,16 +338,22 @@ fn run_event_loop(ctx: &mut Network) {
     }
 }
 
-fn run_client() {
+fn run_client(orig_port: bool) {
     let mut ctx = Network {
         poll: Poll::new().unwrap(),
-        listeners: HashMap::new(),
-        connections: HashMap::new(),
         token_count: 0,
+        recv_test: false,
     };
+    let mut listeners = HashMap::new();
+    let mut connections = HashMap::new();
 
     // Connect to a peer
-    let mut stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
+    let mut stream: TcpStream;
+    if orig_port == false {
+        stream = TcpStream::connect("127.0.0.1:1337".parse().unwrap()).unwrap();
+    } else {
+        stream = TcpStream::connect("127.0.0.1:1234".parse().unwrap()).unwrap();
+    }
     let client_token = get_unique_token(&mut ctx.token_count, false);
     ctx.poll
         .registry()
@@ -340,20 +373,22 @@ fn run_client() {
         write_buff: Vec::with_capacity(4096),
         handshake_state: HandshakeState::INIT,
         packet_len: 0,
+        sent_test: false,
     };
 
-    ctx.connections.insert(client_token, conn);
+    connections.insert(client_token, conn);
 
-    run_event_loop(&mut ctx);
+    run_event_loop(&mut ctx, &mut listeners, &mut connections);
 }
 
 fn run_server() {
     let mut ctx = Network {
         poll: Poll::new().unwrap(),
-        listeners: HashMap::new(),
-        connections: HashMap::new(),
         token_count: 0,
+        recv_test: false,
     };
+    let mut listeners = HashMap::new();
+    let mut connections = HashMap::new();
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
     let listener_token = get_unique_token(&mut ctx.token_count, true);
@@ -361,13 +396,14 @@ fn run_server() {
         .registry()
         .register(&mut listener, listener_token, Interest::READABLE)
         .unwrap();
-    ctx.listeners.insert(listener_token, listener);
+    listeners.insert(listener_token, listener);
 
-    run_event_loop(&mut ctx);
+    run_event_loop(&mut ctx, &mut listeners, &mut connections);
 }
 
 fn main() {
     let mut client = true;
+    let mut port_choice = false;
 
     //I'm not insane enough to start digging into CLI options to begin with
     for arg in env::args().skip(1) {
@@ -375,10 +411,18 @@ fn main() {
             client = false;
             break;
         }
+        if arg == "-1" {
+            port_choice = false;
+            break;
+        }
+        if arg == "-2" {
+            port_choice = true;
+            break;
+        }
     }
     println!("Are we a client? {}", client);
     if client {
-        run_client();
+        run_client(port_choice);
     } else {
         run_server();
     }
