@@ -1,16 +1,17 @@
-use aes_gcm::Aes128Gcm;
-use aes_gcm::Aes256Gcm;
+//use aes_gcm::Aes128Gcm;
+//use aes_gcm::Aes256Gcm;
 use blake2::Blake2b;
-use blake2::Blake2s;
-use blake2::VarBlake2b;
+//use blake2::Blake2s;
+//se blake2::VarBlake2b;
 use chacha20poly1305::XChaCha20Poly1305;
+use mio::event::*;
 use mio::net::*;
 use mio::*;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use sha2::Sha384;
-use sha2::Sha512;
-use sha2::Sha512Trunc256;
+//use sha2::Sha256;
+//use sha2::Sha384;
+//use sha2::Sha512;
+//use sha2::Sha512Trunc256;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -18,6 +19,9 @@ use std::env;
 use std::io;
 use std::io::*;
 use std::mem::size_of;
+use std::sync::mpsc::channel;
+use std::sync::*;
+use std::thread;
 
 mod crypto;
 use crate::crypto::*;
@@ -59,7 +63,6 @@ struct Connection {
 }
 
 struct Network {
-    poll: Poll,
     token_count: usize,
     recv_test: bool,
 }
@@ -135,8 +138,8 @@ fn client_write(conn: &mut Connection) {
     match conn.handshake_state {
         HandshakeState::INIT => {
             let serialized = serde_json::to_vec(&client_start_handshake(&conn.crypto)).unwrap();
-            conn.stream.write(&serialized.len().to_be_bytes());
-            conn.stream.write(&serialized);
+            conn.stream.write(&serialized.len().to_be_bytes()).unwrap();
+            conn.stream.write(&serialized).unwrap();
             conn.handshake_state = HandshakeState::INIT_LEN;
         }
         HandshakeState::INIT_LEN => {}
@@ -149,8 +152,8 @@ fn client_write(conn: &mut Connection) {
             let plaintext = serde_json::to_vec(&message).unwrap();
             let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &plaintext);
             //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
-            conn.stream.write(&ciphertext.len().to_be_bytes());
-            conn.stream.write(&ciphertext);
+            conn.stream.write(&ciphertext.len().to_be_bytes()).unwrap();
+            conn.stream.write(&ciphertext).unwrap();
             conn.message_count += 1;
             if conn.sent_test == false {
                 conn.sent_test = true;
@@ -162,6 +165,7 @@ fn client_write(conn: &mut Connection) {
 
 fn server_read(
     conn: &mut Connection,
+    registry: &Registry,
     ctx: &mut Network,
     listeners: &mut HashMap<Token, TcpListener>,
 ) {
@@ -196,8 +200,8 @@ fn server_read(
                 let server_response =
                     server_respond_handshake::<Blake2b>(&mut conn.crypto, &client_handshake);
                 let serialized = serde_json::to_vec(&server_response).unwrap();
-                conn.stream.write(&serialized.len().to_be_bytes());
-                conn.stream.write(&serialized);
+                conn.stream.write(&serialized.len().to_be_bytes()).unwrap();
+                conn.stream.write(&serialized).unwrap();
                 conn.read_buff.drain(..conn.packet_len);
                 conn.message_count += 1;
                 conn.handshake_state = HandshakeState::LEN;
@@ -229,8 +233,7 @@ fn server_read(
                     let mut listener =
                         TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
                     let listener_token = get_unique_token(&mut ctx.token_count, true);
-                    ctx.poll
-                        .registry()
+                    registry
                         .register(&mut listener, listener_token, Interest::READABLE)
                         .unwrap();
                     listeners.insert(listener_token, listener);
@@ -257,8 +260,8 @@ fn server_write(conn: &mut Connection) {
         let plaintext = serde_json::to_vec(&message).unwrap();
         let ciphertext = encrypt_message::<XChaCha20Poly1305>(&mut conn.crypto, &plaintext);
         //TODO: Even nagle doesn't save us, this will literally write 8 bytes to the wire, needs buffering
-        conn.stream.write(&ciphertext.len().to_be_bytes());
-        conn.stream.write(&ciphertext);
+        conn.stream.write(&ciphertext.len().to_be_bytes()).unwrap();
+        conn.stream.write(&ciphertext).unwrap();
         conn.message_count += 1;
         if conn.sent_test == false {
             conn.sent_test = true;
@@ -281,16 +284,19 @@ fn server_write(conn: &mut Connection) {
 
 fn process_read_event(
     conn: &mut Connection,
+    registry: &Registry,
     ctx: &mut Network,
     listeners: &mut HashMap<Token, TcpListener>,
 ) {
+    println!("Process read event");
     match conn.role {
         NetworkRole::CLIENT => client_read(conn),
-        NetworkRole::SERVER => server_read(conn, ctx, listeners),
+        NetworkRole::SERVER => server_read(conn, registry, ctx, listeners),
     }
 }
 
 fn process_write_event(conn: &mut Connection) {
+    println!("Process write event");
     match conn.role {
         NetworkRole::CLIENT => client_write(conn),
         NetworkRole::SERVER => server_write(conn),
@@ -298,16 +304,45 @@ fn process_write_event(conn: &mut Connection) {
 }
 
 fn run_event_loop(
-    ctx: &mut Network,
-    listeners: &mut HashMap<Token, TcpListener>,
-    connections: &mut HashMap<Token, Connection>,
+    poll: Arc<Mutex<Poll>>,
+    ctx: Arc<Mutex<Network>>,
+    listeners: Arc<Mutex<HashMap<Token, TcpListener>>>,
+    connections: Arc<Mutex<HashMap<Token, Connection>>>,
 ) {
     let mut events = Events::with_capacity(128);
 
+    let (tx, rx) = channel();
+
+    {
+        let ctx = Arc::clone(&ctx);
+        let listeners = Arc::clone(&listeners);
+        let connections = Arc::clone(&connections);
+        let registry = poll.lock().unwrap().registry();
+        thread::spawn(move || loop {
+            let (readable, writable, tok): (bool, bool, Token) = rx.recv().unwrap();
+            println!("Got an event in the worker thread");
+            let mut conn_lock = connections.lock().unwrap();
+            let mut conn = conn_lock.get_mut(&tok).unwrap();
+            if readable == true {
+                println!("Starting process read");
+                let mut ctx_lock = ctx.lock().unwrap();
+                println!("Test 4");
+                let mut listen_lock = listeners.lock().unwrap();
+                println!("Test 5");
+                process_read_event(conn, &registry, &mut ctx_lock, &mut listen_lock);
+            }
+            if writable == true {
+                process_write_event(conn);
+            }
+        });
+    }
+
     loop {
-        if let Err(e) = ctx.poll.poll(&mut events, None) {
-            println!("Poll failed with error {}", e);
-            return;
+        {
+            if let Err(e) = poll.lock().unwrap().poll(&mut events, None) {
+                println!("Poll failed with error {}", e);
+                break;
+            }
         }
 
         for event in events.iter() {
@@ -315,11 +350,17 @@ fn run_event_loop(
                 listener_token
                     if event.is_readable() && (listener_token.0 & LISTENER_MASK != 0) =>
                 {
-                    let listener = listeners.get_mut(&listener_token).unwrap();
+                    println!("Server listener hit");
+                    let mut listener_lock = listeners.lock().unwrap();
+                    println!("Test 1");
+                    let listener = listener_lock.get_mut(&listener_token).unwrap();
+                    println!("Test 2");
                     let (mut stream, _) = listener.accept().unwrap();
-                    let client_token = get_unique_token(&mut ctx.token_count, false);
-                    ctx.poll
-                        .registry()
+                    println!("Test 3");
+                    let client_token =
+                        get_unique_token(&mut ctx.lock().unwrap().token_count, false);
+                    println!("Here");
+                    poll.lock().unwrap().registry()
                         .register(
                             &mut stream,
                             client_token,
@@ -337,30 +378,28 @@ fn run_event_loop(
                         packet_len: 0,
                         sent_test: false,
                     };
-                    connections.insert(client_token, conn);
+                    connections.lock().unwrap().insert(client_token, conn);
+                    println!("Server listener done work");
                 }
                 connection_token => {
-                    let mut conn = connections.get_mut(&connection_token).unwrap();
-                    if event.is_readable() {
-                        process_read_event(conn, ctx, listeners);
-                    }
-                    if event.is_writable() {
-                        process_write_event(conn);
-                    }
+                    println!("Sending a connection event {:?}", event);
+                    tx.send((event.is_readable(), event.is_writable(), connection_token))
+                        .unwrap();
                 }
             }
         }
     }
+    //worker_thread.join().unwrap();
 }
 
 fn run_client(orig_port: bool) {
-    let mut ctx = Network {
-        poll: Poll::new().unwrap(),
+    let mut poll = Arc::new(Mutex::new(Poll::new().unwrap()));
+    let ctx = Arc::new(Mutex::new(Network {
         token_count: 0,
         recv_test: false,
-    };
-    let mut listeners = HashMap::new();
-    let mut connections = HashMap::new();
+    }));
+    let listeners = Arc::new(Mutex::new(HashMap::new()));
+    let connections = Arc::new(Mutex::new(HashMap::new()));
 
     // Connect to a peer
     let mut stream: TcpStream;
@@ -369,9 +408,8 @@ fn run_client(orig_port: bool) {
     } else {
         stream = TcpStream::connect("127.0.0.1:1234".parse().unwrap()).unwrap();
     }
-    let client_token = get_unique_token(&mut ctx.token_count, false);
-    ctx.poll
-        .registry()
+    let client_token = get_unique_token(&mut ctx.lock().unwrap().token_count, false);
+    poll.lock().unwrap().registry()
         .register(
             &mut stream,
             client_token,
@@ -391,29 +429,29 @@ fn run_client(orig_port: bool) {
         sent_test: false,
     };
 
-    connections.insert(client_token, conn);
+    connections.lock().unwrap().insert(client_token, conn);
 
-    run_event_loop(&mut ctx, &mut listeners, &mut connections);
+    run_event_loop(poll, ctx, listeners, connections);
 }
 
 fn run_server() {
-    let mut ctx = Network {
-        poll: Poll::new().unwrap(),
+    let mut poll = Arc::new(Mutex::new(Poll::new().unwrap()));
+    let ctx = Arc::new(Mutex::new(Network {
         token_count: 0,
         recv_test: false,
-    };
-    let mut listeners = HashMap::new();
-    let mut connections = HashMap::new();
+    }));
+    let listeners = Arc::new(Mutex::new(HashMap::new()));
+    let connections = Arc::new(Mutex::new(HashMap::new()));
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
-    let listener_token = get_unique_token(&mut ctx.token_count, true);
-    ctx.poll
-        .registry()
+    let listener_token = get_unique_token(&mut ctx.lock().unwrap().token_count, true);
+    poll.lock().unwrap().registry()
         .register(&mut listener, listener_token, Interest::READABLE)
         .unwrap();
-    listeners.insert(listener_token, listener);
 
-    run_event_loop(&mut ctx, &mut listeners, &mut connections);
+    listeners.lock().unwrap().insert(listener_token, listener);
+
+    run_event_loop(poll, ctx, listeners, connections);
 }
 
 fn main() {

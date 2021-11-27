@@ -1,26 +1,14 @@
 use aead::{Aead, Key, NewAead, Nonce};
-use aes_gcm::Aes256Gcm;
-use blake2::Blake2b;
-use chacha20poly1305::XChaCha20Poly1305;
 use digest::Digest;
-use digest::FixedOutput;
-use generic_array::typenum::U12;
 use generic_array::typenum::U24;
 use generic_array::typenum::U32;
 use generic_array::typenum::U64;
-use generic_array::ArrayLength;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::convert::TryInto;
-use typenum::operator_aliases::Eq;
-use typenum::type_operators::Cmp;
 use typenum::type_operators::IsEqual;
-use typenum::type_operators::IsGreaterOrEqual;
 use typenum::True;
-use x25519_dalek::{EphemeralSecret, PublicKey, ReusableSecret};
-
-use crate::Connection;
+use x25519_dalek::{PublicKey, ReusableSecret};
 
 //TODO: Implement various other parts of crypto
 //AEAD tunnel, symmetric key ratcheting, signatures, KDF
