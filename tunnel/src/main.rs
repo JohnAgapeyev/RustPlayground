@@ -65,6 +65,7 @@ struct Connection {
 struct Network {
     token_count: usize,
     recv_test: bool,
+    need_listen: bool,
 }
 
 fn get_unique_token(token_count: &mut usize, listener: bool) -> Token {
@@ -163,12 +164,7 @@ fn client_write(conn: &mut Connection) {
     //println!("Client write");
 }
 
-fn server_read(
-    conn: &mut Connection,
-    registry: &Registry,
-    ctx: &mut Network,
-    listeners: &mut HashMap<Token, TcpListener>,
-) {
+fn server_read(conn: &mut Connection, ctx: &mut Network) {
     //TODO: This is a hack for len->data packetization, needs a better solution eventually
     let mut need_processing = true;
     match conn.stream.read_to_end(&mut conn.read_buff) {
@@ -230,14 +226,8 @@ fn server_read(
                 conn.handshake_state = HandshakeState::LEN;
                 conn.packet_len = 0;
                 if response.test == true && ctx.recv_test == false {
-                    let mut listener =
-                        TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
-                    let listener_token = get_unique_token(&mut ctx.token_count, true);
-                    registry
-                        .register(&mut listener, listener_token, Interest::READABLE)
-                        .unwrap();
-                    listeners.insert(listener_token, listener);
                     ctx.recv_test = true;
+                    ctx.need_listen = true;
                 }
             }
         }
@@ -282,16 +272,11 @@ fn server_write(conn: &mut Connection) {
     }
 }
 
-fn process_read_event(
-    conn: &mut Connection,
-    registry: &Registry,
-    ctx: &mut Network,
-    listeners: &mut HashMap<Token, TcpListener>,
-) {
+fn process_read_event(conn: &mut Connection, ctx: &mut Network) {
     println!("Process read event");
     match conn.role {
         NetworkRole::CLIENT => client_read(conn),
-        NetworkRole::SERVER => server_read(conn, registry, ctx, listeners),
+        NetworkRole::SERVER => server_read(conn, ctx),
     }
 }
 
@@ -327,9 +312,8 @@ fn run_event_loop(
                 println!("Starting process read");
                 let mut ctx_lock = ctx.lock().unwrap();
                 println!("Test 4");
-                let mut listen_lock = listeners.lock().unwrap();
                 println!("Test 5");
-                process_read_event(conn, &registry, &mut ctx_lock, &mut listen_lock);
+                process_read_event(conn, &mut ctx_lock);
             }
             if writable == true {
                 process_write_event(conn);
@@ -360,7 +344,9 @@ fn run_event_loop(
                     let client_token =
                         get_unique_token(&mut ctx.lock().unwrap().token_count, false);
                     println!("Here");
-                    poll.lock().unwrap().registry()
+                    poll.lock()
+                        .unwrap()
+                        .registry()
                         .register(
                             &mut stream,
                             client_token,
@@ -388,6 +374,18 @@ fn run_event_loop(
                 }
             }
         }
+        let mut ctx_lock = ctx.lock().unwrap();
+        if ctx_lock.need_listen == true {
+            let mut listener = TcpListener::bind("127.0.0.1:1234".parse().unwrap()).unwrap();
+            let listener_token = get_unique_token(&mut ctx_lock.token_count, true);
+            poll.lock()
+                .unwrap()
+                .registry()
+                .register(&mut listener, listener_token, Interest::READABLE)
+                .unwrap();
+            listeners.lock().unwrap().insert(listener_token, listener);
+            ctx_lock.need_listen = false;
+        }
     }
     //worker_thread.join().unwrap();
 }
@@ -397,6 +395,7 @@ fn run_client(orig_port: bool) {
     let ctx = Arc::new(Mutex::new(Network {
         token_count: 0,
         recv_test: false,
+        need_listen: false,
     }));
     let listeners = Arc::new(Mutex::new(HashMap::new()));
     let connections = Arc::new(Mutex::new(HashMap::new()));
@@ -409,7 +408,9 @@ fn run_client(orig_port: bool) {
         stream = TcpStream::connect("127.0.0.1:1234".parse().unwrap()).unwrap();
     }
     let client_token = get_unique_token(&mut ctx.lock().unwrap().token_count, false);
-    poll.lock().unwrap().registry()
+    poll.lock()
+        .unwrap()
+        .registry()
         .register(
             &mut stream,
             client_token,
@@ -439,13 +440,16 @@ fn run_server() {
     let ctx = Arc::new(Mutex::new(Network {
         token_count: 0,
         recv_test: false,
+        need_listen: false,
     }));
     let listeners = Arc::new(Mutex::new(HashMap::new()));
     let connections = Arc::new(Mutex::new(HashMap::new()));
 
     let mut listener = TcpListener::bind("127.0.0.1:1337".parse().unwrap()).unwrap();
     let listener_token = get_unique_token(&mut ctx.lock().unwrap().token_count, true);
-    poll.lock().unwrap().registry()
+    poll.lock()
+        .unwrap()
+        .registry()
         .register(&mut listener, listener_token, Interest::READABLE)
         .unwrap();
 
