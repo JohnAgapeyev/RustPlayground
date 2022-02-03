@@ -13,6 +13,7 @@ use std::mem::size_of;
 use std::sync::mpsc::channel;
 use std::sync::*;
 use std::thread;
+use async_recursion::async_recursion;
 
 mod crypto;
 use crate::crypto::*;
@@ -149,6 +150,7 @@ async fn run_client(orig_port: bool) {
     }
 }
 
+#[async_recursion]
 async fn process(stream: &mut TcpStream) {
     let mut message_count = 0u64;
     let mut crypto = CryptoCtx::default();
@@ -200,23 +202,23 @@ async fn process(stream: &mut TcpStream) {
         packet_len = 0;
 
         //TODO: This runs into weird recursive issues
-        //if response.test {
-        //    println!("Creating listener");
-        //    tokio::spawn(async move {
-        //        // Bind the listener to the address
-        //        let listener = TcpListener::bind("127.0.0.1:1234").await.unwrap();
+        if response.test {
+            println!("Creating listener");
+            tokio::spawn(async move {
+                // Bind the listener to the address
+                let listener = TcpListener::bind("127.0.0.1:1234").await.unwrap();
 
-        //        loop {
-        //            // The second item contains the IP and port of the new connection.
-        //            let (mut socket, _) = listener.accept().await.unwrap();
-        //            // A new task is spawned for each inbound socket. The socket is
-        //            // moved to the new task and processed there.
-        //            tokio::spawn(async move {
-        //                process(&mut socket).await;
-        //            });
-        //        }
-        //    });
-        //}
+                loop {
+                    // The second item contains the IP and port of the new connection.
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    // A new task is spawned for each inbound socket. The socket is
+                    // moved to the new task and processed there.
+                    tokio::spawn(async move {
+                        process(&mut socket).await;
+                    });
+                }
+            });
+        }
 
 
         let message = TestMessage {
