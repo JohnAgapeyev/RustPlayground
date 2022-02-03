@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.16.1", features = ["full"]}
+tokio = { version = "1.16.1", features = ["rt-multi-thread", "io-util", "net", "time", "macros"]}
 zeroize = "1.4"
 rand = { version = "0.8", features = ["getrandom", "std"]}
 #The stable 1.2 branch has some old dependency versions that are annoying to deal with
