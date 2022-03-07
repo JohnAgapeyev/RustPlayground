@@ -15,7 +15,6 @@ use std::mem::size_of;
 use std::sync::mpsc::channel;
 use std::sync::*;
 use std::thread;
-use async_recursion::async_recursion;
 use tokio_util::codec::{Framed, Encoder, Decoder};
 use bytes::{Buf, BytesMut};
 use std::marker::PhantomData;
@@ -147,7 +146,6 @@ async fn run_client() {
     }
 }
 
-#[async_recursion]
 async fn process(stream: &mut TcpStream) {
     let mut message_count = 0u64;
     let mut crypto = CryptoCtx::default();
