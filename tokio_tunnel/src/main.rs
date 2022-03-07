@@ -6,7 +6,6 @@ use blake2::Blake2b;
 use chacha20poly1305::XChaCha20Poly1305;
 use serde::{Deserialize, Serialize};
 use serde::de::{DeserializeOwned};
-use serde_json::Error;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -20,6 +19,10 @@ use bytes::{Buf, BytesMut};
 use std::marker::PhantomData;
 use futures::stream::{self, StreamExt};
 use futures::sink::{self, SinkExt};
+use std::time::SystemTime;
+use rustls::{ClientConfig, Certificate, ServerName, SignatureScheme};
+use rustls::client::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
+use rustls::internal::msgs::handshake::DigitallySignedStruct;
 
 mod crypto;
 use crate::crypto::*;
@@ -99,9 +102,64 @@ where
     }
 }
 
+struct DummyCertVerifier {}
+
+impl ServerCertVerifier for DummyCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &Certificate,
+        _intermediates: &[Certificate],
+        _server_name: &ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: SystemTime
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &Certificate,
+        _dss: &DigitallySignedStruct
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &Certificate,
+        _dss: &DigitallySignedStruct
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        Vec::new()
+    }
+    fn request_scts(&self) -> bool {
+        false
+    }
+}
+
 async fn run_client() {
     // Connect to a peer
     let mut stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
+
+    let mut config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    config.dangerous().set_certificate_verifier(Arc::new(DummyCertVerifier{}));
+
+    let rc_config = Arc::new(config);
+    /*
+     * TODO: Next steps:
+     *  - Set up a background TLS traffic task (use complete_io with SyncIoBridge on the tokio
+     *  TcpStream)
+     *  - Implement AsyncRead + AsyncWrite on the connection
+     *  - Make sure error handling will not be ignored or randomly panic if we don't want it to
+     */
+    let mut client = rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap());
 
     let mut message_count = 0u64;
     let mut crypto = CryptoCtx::default();
@@ -128,7 +186,7 @@ async fn run_client() {
     client_finish_handshake::<Blake2b>(&mut crypto, &response);
     read_buff.drain(..packet_len);
 
-    let mut pipeline = IOPipeline::<TestMessage> {
+    let pipeline = IOPipeline::<TestMessage> {
         marker: PhantomData,
         crypto: crypto,
     };
@@ -173,7 +231,7 @@ async fn process(stream: &mut TcpStream) {
     read_buff.drain(..packet_len);
     message_count += 1;
 
-    let mut pipeline = IOPipeline::<TestMessage> {
+    let pipeline = IOPipeline::<TestMessage> {
         marker: PhantomData,
         crypto: crypto,
     };
