@@ -7,6 +7,10 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.16.1", features = ["rt-multi-thread", "io-util", "net", "time", "macros"]}
+tokio-util = { version = "0.7", features = ["codec", "time", "net", "rt"]}
+bytes = "1.1"
+futures = { version = "0.3.21", features = ["executor"]}
+futures-util = { version = "0.3.21", features = ["io", "sink"]}
 zeroize = "1.4"
 rand = { version = "0.8", features = ["getrandom", "std"]}
 #The stable 1.2 branch has some old dependency versions that are annoying to deal with
@@ -29,5 +33,6 @@ async-recursion = "1.0"
 [profile.release]
 opt-level = 3
 lto = "thin"
+strip = true
 #panic = "abort"
 
