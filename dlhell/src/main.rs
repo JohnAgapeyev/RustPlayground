@@ -14,6 +14,50 @@ fn call_dynamic() {
 }
 
 fn main() {
+    println!("Pre hello");
+    unsafe {
+        std::arch::asm!(
+            "",
+            out("rax") _,
+            //out("rbx") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("rsi") _,
+            out("rdi") _,
+            clobber_abi("C"),
+        );
+    }
+    let x = false;
     println!("Hello, world!");
+    unsafe {
+        if std::ptr::read_volatile(std::ptr::addr_of!(x)) {
+            std::arch::asm!(
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                clobber_abi("C"),
+            );
+        }
+    }
+    unsafe {
+        std::arch::asm!(
+            "",
+            out("rax") _,
+            //out("rbx") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("rsi") _,
+            out("rdi") _,
+            clobber_abi("C"),
+        );
+    }
+    println!("Post hello");
     call_dynamic();
 }

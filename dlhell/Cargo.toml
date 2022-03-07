@@ -8,3 +8,13 @@ edition = "2021"
 [dependencies]
 libloading = ">=0.7.2"
 mylib = { path = "mylib" }
+
+[profile.release]
+#TARGET CPU IS IMPORTANT FOR OPTIMIZATION, DON'T FORGET, FIND A GOOD WAY TO ENABLE
+#strip = true
+#opt-level = "z"  # Optimize for size.
+#opt-level = 3
+#lto = "thin"
+#codegen-units=1
+#panic = "abort"
+
