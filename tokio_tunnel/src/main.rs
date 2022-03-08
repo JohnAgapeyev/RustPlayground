@@ -1,28 +1,34 @@
 #![allow(unused_imports)]
 
-use tokio::net::{TcpStream, TcpListener};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use blake2::Blake2b;
+use bytes::{Buf, BytesMut};
 use chacha20poly1305::XChaCha20Poly1305;
+use futures::sink::{self, SinkExt};
+use futures::stream::{self, StreamExt};
+use rustls::client::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::internal::msgs::handshake::DigitallySignedStruct;
+use rustls::{Certificate, ClientConfig, ConnectionCommon, ServerName, SignatureScheme};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde::de::{DeserializeOwned};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::env;
+use std::marker::PhantomData;
+use std::marker::Send;
+use std::marker::Sync;
 use std::mem::size_of;
-use std::sync::mpsc::channel;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::*;
 use std::thread;
-use tokio_util::codec::{Framed, Encoder, Decoder};
-use bytes::{Buf, BytesMut};
-use std::marker::PhantomData;
-use futures::stream::{self, StreamExt};
-use futures::sink::{self, SinkExt};
 use std::time::SystemTime;
-use rustls::{ClientConfig, Certificate, ServerName, SignatureScheme};
-use rustls::client::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
-use rustls::internal::msgs::handshake::DigitallySignedStruct;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::channel;
+use tokio::sync::oneshot;
+use tokio_util::codec::{Decoder, Encoder, Framed};
+use tokio_util::io::SyncIoBridge;
 
 mod crypto;
 use crate::crypto::*;
@@ -59,10 +65,7 @@ where
     type Item = T;
     type Error = std::io::Error;
 
-    fn decode(
-        &mut self,
-        src: &mut BytesMut
-    ) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         const LEN_LEN: usize = size_of::<usize>();
 
         if src.len() < LEN_LEN {
@@ -82,10 +85,7 @@ where
         let data = src[LEN_LEN..LEN_LEN + packet_len].to_vec();
         src.advance(LEN_LEN + packet_len);
 
-        let plaintext = decrypt_message::<XChaCha20Poly1305>(
-            &mut self.crypto,
-            &data,
-        );
+        let plaintext = decrypt_message::<XChaCha20Poly1305>(&mut self.crypto, &data);
         let deser = serde_json::from_slice::<T>(&plaintext);
         if let Err(e) = deser {
             if serde_json::Error::is_eof(&e) {
@@ -94,7 +94,7 @@ where
             }
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Some other kind of error happened"
+                "Some other kind of error happened",
             ));
         }
 
@@ -112,7 +112,7 @@ impl ServerCertVerifier for DummyCertVerifier {
         _server_name: &ServerName,
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
-        _now: SystemTime
+        _now: SystemTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
@@ -121,7 +121,7 @@ impl ServerCertVerifier for DummyCertVerifier {
         &self,
         _message: &[u8],
         _cert: &Certificate,
-        _dss: &DigitallySignedStruct
+        _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
@@ -129,7 +129,7 @@ impl ServerCertVerifier for DummyCertVerifier {
         &self,
         _message: &[u8],
         _cert: &Certificate,
-        _dss: &DigitallySignedStruct
+        _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
@@ -141,6 +141,28 @@ impl ServerCertVerifier for DummyCertVerifier {
     }
 }
 
+/*
+ * TODO:
+ * Here's the plan:
+ * Vec<u8> implements write and [u8] implements read
+ * We can use this to make a nice and easy synchronous IO interface in an async function
+ * This will avoid SyncIoBridge which avoids taking ownership of our async underlying stream
+ * Just add some yield calls for good measure, and let it whir away in the background
+ */
+fn run_tls_connection<T, U>(conn: T, stream: TcpStream)
+where
+    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
+{
+    let mut bridge = SyncIoBridge::new(stream);
+    let (tx, rx) = oneshot::channel();
+
+    tokio::task::spawn(async move || {
+        let mut conn: T = rx.blocking_recv().unwrap();
+        conn.complete_io(&mut bridge);
+    });
+    tx.send(conn);
+}
+
 async fn run_client() {
     // Connect to a peer
     let mut stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
@@ -149,7 +171,9 @@ async fn run_client() {
         .with_safe_defaults()
         .with_root_certificates(rustls::RootCertStore::empty())
         .with_no_client_auth();
-    config.dangerous().set_certificate_verifier(Arc::new(DummyCertVerifier{}));
+    config
+        .dangerous()
+        .set_certificate_verifier(Arc::new(DummyCertVerifier {}));
 
     let rc_config = Arc::new(config);
     /*
@@ -159,7 +183,10 @@ async fn run_client() {
      *  - Implement AsyncRead + AsyncWrite on the connection
      *  - Make sure error handling will not be ignored or randomly panic if we don't want it to
      */
-    let mut client = rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap());
+    let mut client =
+        rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap()).unwrap();
+
+    run_tls_connection(client, stream);
 
     let mut message_count = 0u64;
     let mut crypto = CryptoCtx::default();
@@ -221,10 +248,8 @@ async fn process(stream: &mut TcpStream) {
     }
     println!("Starting to respond");
     //Respond to the handshake
-    let client_handshake =
-        serde_json::from_slice(&read_buff[..packet_len]).unwrap();
-    let server_response =
-        server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
+    let client_handshake = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
+    let server_response = server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
     let serialized = serde_json::to_vec(&server_response).unwrap();
     stream.write(&serialized.len().to_be_bytes()).await.unwrap();
     stream.write(&serialized).await.unwrap();
