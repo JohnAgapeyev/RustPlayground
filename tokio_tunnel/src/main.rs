@@ -14,16 +14,20 @@ use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::env;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::marker::Send;
 use std::marker::Sync;
+use std::marker::Unpin;
 use std::mem::size_of;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::sync::*;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::thread;
 use std::time::SystemTime;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
 use tokio::sync::oneshot;
@@ -141,6 +145,57 @@ impl ServerCertVerifier for DummyCertVerifier {
     }
 }
 
+struct AsyncTLSConnection<T, U>
+where
+    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+{
+    tcp: Arc<std::sync::Mutex<SyncIoBridge<TcpStream>>>,
+    tls: Arc<std::sync::Mutex<T>>,
+    //TODO: Set up the type for the channel, going to be some kind of Option<>, Result<>, tuple,
+    //Vec garbage heap
+    //But it would mean the type is shared across read and write calls, and would handle all error
+    //cases
+    channel: Arc<(tokio::sync::mpsc::Sender<>, tokio::sync::mpsc::Receiver<>)>,
+}
+
+impl<T, U> AsyncTLSConnection<T, U>
+where
+    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+{
+    fn new(tcp: TcpStream, tls: T) -> Self {
+        AsyncTLSConnection {
+            tcp: Arc::new(std::sync::Mutex::new(SyncIoBridge::new(tcp))),
+            tls: Arc::new(std::sync::Mutex::new(tls)),
+            channel: tokio::sync::mpsc::channel(128),
+        }
+    }
+}
+
+impl<T, U> AsyncRead for AsyncTLSConnection<T, U>
+where
+    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let tcp = Arc::clone(&self.tcp);
+        let tls = Arc::clone(&self.tls);
+        let waker = cx.waker().clone();
+        tokio::task::spawn_blocking(move || {
+            let mut tls = tls.lock().unwrap();
+            let mut tcp = tcp.lock().unwrap();
+            tls.complete_io(&mut *tcp);
+            let mut raw_buf: Vec<u8> = Vec::new();
+            self.res = tls.reader().read(&mut raw_buf);
+            buf.put_slice(&raw_buf);
+            waker.wake();
+        });
+        Poll::Ready(Ok(()))
+    }
+}
+
 /*
  * TODO:
  * Here's the plan:
@@ -153,14 +208,14 @@ fn run_tls_connection<T, U>(conn: T, stream: TcpStream)
 where
     T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
 {
-    let mut bridge = SyncIoBridge::new(stream);
-    let (tx, rx) = oneshot::channel();
+    //let mut bridge = SyncIoBridge::new(stream);
+    //let (tx, rx) = oneshot::channel();
 
-    tokio::task::spawn(async move || {
-        let mut conn: T = rx.blocking_recv().unwrap();
-        conn.complete_io(&mut bridge);
-    });
-    tx.send(conn);
+    //tokio::task::spawn(async move || {
+    //    let mut conn: T = rx.blocking_recv().unwrap();
+    //    conn.complete_io(&mut bridge);
+    //});
+    //tx.send(conn);
 }
 
 async fn run_client() {
@@ -186,7 +241,7 @@ async fn run_client() {
     let mut client =
         rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap()).unwrap();
 
-    run_tls_connection(client, stream);
+    //run_tls_connection(client, stream);
 
     let mut message_count = 0u64;
     let mut crypto = CryptoCtx::default();
