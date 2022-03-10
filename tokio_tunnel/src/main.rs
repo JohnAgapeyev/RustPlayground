@@ -191,163 +191,63 @@ where
         let tls = Arc::clone(&self.tls);
         let waker = cx.waker().clone();
         let tx = Arc::clone(&self.tx);
-        eprintln!("Let's call try_recv");
         match self.rx.lock().unwrap().try_recv() {
-            Ok((res, raw_buf)) => {
-                eprintln!("Try recv is ok");
-                match res {
-                    Ok(_) => {
-                        debug_assert!(raw_buf.is_some());
-                        eprintln!("Try recv is ok with ok");
-                        eprintln!("What's my stuff {:#?}", &raw_buf.as_ref().unwrap());
-                        buf.put_slice(&raw_buf.unwrap());
-                        Poll::Ready(Ok(()))
-                    }
-                    Err(e) => {
-                        eprintln!("Try recv is ok with err {}", e.to_string());
-                        Poll::Ready(Err(e))
-                    }
+            Ok((res, raw_buf)) => match res {
+                Ok(_) => {
+                    debug_assert!(raw_buf.is_some());
+                    buf.put_slice(&raw_buf.unwrap());
+                    Poll::Ready(Ok(()))
                 }
-            }
+                Err(e) => Poll::Ready(Err(e)),
+            },
             Err(TryRecvError::Empty) => {
-                eprintln!("Empty?");
                 tokio::task::spawn_blocking(move || {
                     {
-                        eprintln!("Pre locks");
                         let mut tls = tls.lock().unwrap();
                         let mut tcp = tcp.lock().unwrap();
-                        //eprintln!("Calling complete io");
+                        match tls.complete_io(&mut *tcp) {
+                            Ok((rd, wr)) => {
+                                let mut raw_buf: Vec<u8> = Vec::with_capacity(4096);
 
-                        //let mut test_buf = [0u8; 4096];
-                        //let ans = tcp.read(&mut test_buf).unwrap();
-                        //eprintln!("Test buf is {} bytes big now", ans);
-                        //eprintln!("1 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //tls.read_tls(&mut *tcp);
-                        //tls.process_new_packets();
-                        //eprintln!("2 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //eprintln!("I have received the client hello and passed it on");
-                        //tls.write_tls(&mut *tcp);
-                        //tls.process_new_packets();
-                        //eprintln!("3 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //eprintln!("I have sent my response");
-                        //tls.read_tls(&mut *tcp);
-                        //tls.process_new_packets();
-                        //eprintln!("4 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //eprintln!("2 I have received the client hello and passed it on");
-                        //tls.write_tls(&mut *tcp);
-                        //tls.process_new_packets();
-                        //eprintln!("5 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //eprintln!("2 I have sent my response");
+                                let mut good_result = false;
 
-                        let (rd, wr) = tls.complete_io(&mut *tcp).unwrap();
-                        eprintln!("Data {} {}", rd, wr);
-                        eprintln!("6 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-
-                        let mut test_buf = [0u8; 4096];
-                        let ans = tls.reader().read(&mut test_buf).unwrap();
-                        eprintln!("Now received {} bytes", ans);
-                        let raw_buf = Vec::from(&test_buf[..ans]);
-                        let res = tx.lock().unwrap().blocking_send((Ok(ans), Some(raw_buf)));
-                        match res {
-                            Ok(_) => {
-                                eprintln!("Blocking send is ok");
+                                match tls.reader().read_to_end(&mut raw_buf) {
+                                    Ok(_) => {
+                                        good_result = true;
+                                    }
+                                    Err(e) => {
+                                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                                            good_result = true;
+                                        } else {
+                                            good_result = false;
+                                            eprintln!("TLS Error is {}", e.to_string());
+                                            tx.lock()
+                                                .unwrap()
+                                                .blocking_send((Err(e), None))
+                                                .unwrap();
+                                        }
+                                    }
+                                }
+                                if good_result {
+                                    let res = tx
+                                        .lock()
+                                        .unwrap()
+                                        .blocking_send((Ok(raw_buf.len()), Some(raw_buf)));
+                                    match res {
+                                        Ok(_) => {
+                                            eprintln!("Blocking send is ok");
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error is {}", e.to_string());
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => {
                                 eprintln!("Error is {}", e.to_string());
+                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
                             }
                         }
-
-                        //while tls.wants_read() || tls.wants_write() {
-                        //    eprintln!("IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
-                        //    if tls.wants_read() {
-                        //        tls.read_tls(&mut *tcp);
-                        //        tls.process_new_packets();
-                        //    }
-                        //    if tls.wants_write() {
-                        //        tls.write_tls(&mut *tcp);
-                        //        tls.process_new_packets();
-                        //    }
-                        //}
-                        //eprintln!("IO loop done");
-                        //let fuck = tls.complete_io(&mut *tcp);
-                        //eprintln!("Complete IO done");
-                        //match fuck {
-                        //    Ok((rd, wr)) => {
-                        //        let mut raw_buf: Vec<u8> = Vec::with_capacity(4096);
-                        //        eprintln!("IO is good, now we read");
-                        //        eprintln!("Data we got {} {}", rd, wr);
-
-                        //        if tls.wants_read() || tls.wants_write() {
-                        //            tls.complete_io(&mut *tcp);
-                        //        }
-
-
-                        //        let ans = tls.reader().read(&mut raw_buf);
-                        //        eprintln!("Reader answer is {ans:#?}");
-                        //        eprintln!("Buffer contents are {:#?}", &raw_buf);
-                        //        eprintln!("Handshaking? {:?}", tls.is_handshaking());
-                        //        eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
-                        //        if tls.wants_read() || tls.wants_write() {
-                        //            tls.complete_io(&mut *tcp);
-                        //        }
-
-                        //        //tcp.write(b"FIZZBUZZ");
-
-                        //        //tls.writer().write(b"ABC");
-                        //        //tls.writer().write(b"DEF");
-                        //        //tls.writer().write(b"GHI");
-                        //        //tls.writer().write(b"JKLM");
-                        //        //tls.writer().flush();
-
-                        //        //tcp.write(b"BUZZBUZZ");
-
-                        //        //while tls.wants_read() || tls.wants_write() {
-                        //        //    if tls.wants_read() {
-                        //        //        tls.read_tls(&mut *tcp);
-                        //        //    }
-                        //        //    if tls.wants_write() {
-                        //        //        tls.write_tls(&mut *tcp);
-                        //        //    }
-                        //        //    tls.process_new_packets();
-                        //        //}
-
-                        //        //let ans = tls.reader().read(&mut raw_buf);
-                        //        //eprintln!("Second try");
-                        //        //eprintln!("Reader answer is {ans:#?}");
-                        //        //eprintln!("Buffer contents are {:#?}", &raw_buf);
-                        //        //eprintln!("Handshaking? {:?}", tls.is_handshaking());
-                        //        //eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
-
-                        //        match tls.reader().read(&mut raw_buf) {
-                        //            Ok(sz) => {
-                        //                eprintln!("Reader is ok with sz {:?}", sz);
-                        //                eprintln!("Sending {:#?}", &raw_buf);
-                        //                let res = tx.lock().unwrap().blocking_send((Ok(sz), Some(raw_buf)));
-                        //                match res {
-                        //                    Ok(_) => {
-                        //                        eprintln!("Blocking send is ok");
-                        //                    }
-                        //                    Err(e) => {
-                        //                        eprintln!("Error is {}", e.to_string());
-                        //                    }
-                        //                }
-                        //        }
-                        //            Err(e) => {
-                        //                eprintln!("TLS Error is {}", e.to_string());
-                        //                //TODO: This is bad, very bad, needs fix
-                        //                tx.lock()
-                        //                    .unwrap()
-                        //                    .blocking_send((Ok(0), Some(raw_buf)))
-                        //                    .unwrap();
-                        //        }
-                        //        }
-                        //    }
-                        //    Err(e) => {
-                        //        eprintln!("IO is bad, now we read");
-                        //        eprintln!("Error is {}", e.to_string());
-                        //        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                        //    }
-                        //}
                     }
                     waker.wake();
                 });
@@ -616,8 +516,6 @@ async fn run_client() {
 
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-
-
     tokio::task::spawn_blocking(move || {
         eprintln!("Starting to send");
         let data: u64 = 0xabcd;
@@ -638,8 +536,6 @@ async fn run_client() {
         eprintln!("Done sending");
         std::thread::sleep(std::time::Duration::from_secs(30));
     });
-
-
 
     //let serialized = serde_json::to_vec(&client_start_handshake(&crypto)).unwrap();
     //tls_stream
@@ -716,7 +612,6 @@ fn load_private_key(filename: &str) -> rustls::PrivateKey {
 }
 
 async fn process(mut stream: TcpStream) {
-
     //let mut bridge = SyncIoBridge::new(stream);
 
     //tokio::task::spawn_blocking(move || {
