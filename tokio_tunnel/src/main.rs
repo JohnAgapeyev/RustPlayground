@@ -213,85 +213,141 @@ where
                 eprintln!("Empty?");
                 tokio::task::spawn_blocking(move || {
                     {
+                        eprintln!("Pre locks");
                         let mut tls = tls.lock().unwrap();
                         let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((rd, wr)) => {
-                                let mut raw_buf: Vec<u8> = Vec::with_capacity(4096);
-                                eprintln!("IO is good, now we read");
-                                eprintln!("Data we got {} {}", rd, wr);
+                        //eprintln!("Calling complete io");
 
-                                if tls.wants_read() || tls.wants_write() {
-                                    tls.complete_io(&mut *tcp);
-                                }
+                        //let mut test_buf = [0u8; 4096];
+                        //let ans = tcp.read(&mut test_buf).unwrap();
+                        //eprintln!("Test buf is {} bytes big now", ans);
+                        //eprintln!("1 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //tls.read_tls(&mut *tcp);
+                        //tls.process_new_packets();
+                        //eprintln!("2 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //eprintln!("I have received the client hello and passed it on");
+                        //tls.write_tls(&mut *tcp);
+                        //tls.process_new_packets();
+                        //eprintln!("3 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //eprintln!("I have sent my response");
+                        //tls.read_tls(&mut *tcp);
+                        //tls.process_new_packets();
+                        //eprintln!("4 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //eprintln!("2 I have received the client hello and passed it on");
+                        //tls.write_tls(&mut *tcp);
+                        //tls.process_new_packets();
+                        //eprintln!("5 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //eprintln!("2 I have sent my response");
 
+                        let (rd, wr) = tls.complete_io(&mut *tcp).unwrap();
+                        eprintln!("Data {} {}", rd, wr);
+                        eprintln!("6 IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
 
-                                let ans = tls.reader().read(&mut raw_buf);
-                                eprintln!("Reader answer is {ans:#?}");
-                                eprintln!("Buffer contents are {:#?}", &raw_buf);
-                                eprintln!("Handshaking? {:?}", tls.is_handshaking());
-                                eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
-                                if tls.wants_read() || tls.wants_write() {
-                                    tls.complete_io(&mut *tcp);
-                                }
-
-                                //tcp.write(b"FIZZBUZZ");
-
-                                //tls.writer().write(b"ABC");
-                                //tls.writer().write(b"DEF");
-                                //tls.writer().write(b"GHI");
-                                //tls.writer().write(b"JKLM");
-                                //tls.writer().flush();
-
-                                //tcp.write(b"BUZZBUZZ");
-
-                                //while tls.wants_read() || tls.wants_write() {
-                                //    if tls.wants_read() {
-                                //        tls.read_tls(&mut *tcp);
-                                //    }
-                                //    if tls.wants_write() {
-                                //        tls.write_tls(&mut *tcp);
-                                //    }
-                                //    tls.process_new_packets();
-                                //}
-
-                                //let ans = tls.reader().read(&mut raw_buf);
-                                //eprintln!("Second try");
-                                //eprintln!("Reader answer is {ans:#?}");
-                                //eprintln!("Buffer contents are {:#?}", &raw_buf);
-                                //eprintln!("Handshaking? {:?}", tls.is_handshaking());
-                                //eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
-
-                                match tls.reader().read(&mut raw_buf) {
-                                    Ok(sz) => {
-                                        eprintln!("Reader is ok with sz {:?}", sz);
-                                        eprintln!("Sending {:#?}", &raw_buf);
-                                        let res = tx.lock().unwrap().blocking_send((Ok(sz), Some(raw_buf)));
-                                        match res {
-                                            Ok(_) => {
-                                                eprintln!("Blocking send is ok");
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Error is {}", e.to_string());
-                                            }
-                                        }
-                                }
-                                    Err(e) => {
-                                        eprintln!("TLS Error is {}", e.to_string());
-                                        //TODO: This is bad, very bad, needs fix
-                                        tx.lock()
-                                            .unwrap()
-                                            .blocking_send((Ok(0), Some(raw_buf)))
-                                            .unwrap();
-                                }
-                                }
+                        let mut test_buf = [0u8; 4096];
+                        let ans = tls.reader().read(&mut test_buf).unwrap();
+                        eprintln!("Now received {} bytes", ans);
+                        let raw_buf = Vec::from(&test_buf[..ans]);
+                        let res = tx.lock().unwrap().blocking_send((Ok(ans), Some(raw_buf)));
+                        match res {
+                            Ok(_) => {
+                                eprintln!("Blocking send is ok");
                             }
                             Err(e) => {
-                                eprintln!("IO is bad, now we read");
                                 eprintln!("Error is {}", e.to_string());
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
                             }
                         }
+
+                        //while tls.wants_read() || tls.wants_write() {
+                        //    eprintln!("IO loop running {} {} {}", tls.wants_read(), tls.wants_write(), tls.is_handshaking());
+                        //    if tls.wants_read() {
+                        //        tls.read_tls(&mut *tcp);
+                        //        tls.process_new_packets();
+                        //    }
+                        //    if tls.wants_write() {
+                        //        tls.write_tls(&mut *tcp);
+                        //        tls.process_new_packets();
+                        //    }
+                        //}
+                        //eprintln!("IO loop done");
+                        //let fuck = tls.complete_io(&mut *tcp);
+                        //eprintln!("Complete IO done");
+                        //match fuck {
+                        //    Ok((rd, wr)) => {
+                        //        let mut raw_buf: Vec<u8> = Vec::with_capacity(4096);
+                        //        eprintln!("IO is good, now we read");
+                        //        eprintln!("Data we got {} {}", rd, wr);
+
+                        //        if tls.wants_read() || tls.wants_write() {
+                        //            tls.complete_io(&mut *tcp);
+                        //        }
+
+
+                        //        let ans = tls.reader().read(&mut raw_buf);
+                        //        eprintln!("Reader answer is {ans:#?}");
+                        //        eprintln!("Buffer contents are {:#?}", &raw_buf);
+                        //        eprintln!("Handshaking? {:?}", tls.is_handshaking());
+                        //        eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
+                        //        if tls.wants_read() || tls.wants_write() {
+                        //            tls.complete_io(&mut *tcp);
+                        //        }
+
+                        //        //tcp.write(b"FIZZBUZZ");
+
+                        //        //tls.writer().write(b"ABC");
+                        //        //tls.writer().write(b"DEF");
+                        //        //tls.writer().write(b"GHI");
+                        //        //tls.writer().write(b"JKLM");
+                        //        //tls.writer().flush();
+
+                        //        //tcp.write(b"BUZZBUZZ");
+
+                        //        //while tls.wants_read() || tls.wants_write() {
+                        //        //    if tls.wants_read() {
+                        //        //        tls.read_tls(&mut *tcp);
+                        //        //    }
+                        //        //    if tls.wants_write() {
+                        //        //        tls.write_tls(&mut *tcp);
+                        //        //    }
+                        //        //    tls.process_new_packets();
+                        //        //}
+
+                        //        //let ans = tls.reader().read(&mut raw_buf);
+                        //        //eprintln!("Second try");
+                        //        //eprintln!("Reader answer is {ans:#?}");
+                        //        //eprintln!("Buffer contents are {:#?}", &raw_buf);
+                        //        //eprintln!("Handshaking? {:?}", tls.is_handshaking());
+                        //        //eprintln!("Wants Read: {} Write: {}", tls.wants_read(), tls.wants_write());
+
+                        //        match tls.reader().read(&mut raw_buf) {
+                        //            Ok(sz) => {
+                        //                eprintln!("Reader is ok with sz {:?}", sz);
+                        //                eprintln!("Sending {:#?}", &raw_buf);
+                        //                let res = tx.lock().unwrap().blocking_send((Ok(sz), Some(raw_buf)));
+                        //                match res {
+                        //                    Ok(_) => {
+                        //                        eprintln!("Blocking send is ok");
+                        //                    }
+                        //                    Err(e) => {
+                        //                        eprintln!("Error is {}", e.to_string());
+                        //                    }
+                        //                }
+                        //        }
+                        //            Err(e) => {
+                        //                eprintln!("TLS Error is {}", e.to_string());
+                        //                //TODO: This is bad, very bad, needs fix
+                        //                tx.lock()
+                        //                    .unwrap()
+                        //                    .blocking_send((Ok(0), Some(raw_buf)))
+                        //                    .unwrap();
+                        //        }
+                        //        }
+                        //    }
+                        //    Err(e) => {
+                        //        eprintln!("IO is bad, now we read");
+                        //        eprintln!("Error is {}", e.to_string());
+                        //        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+                        //    }
+                        //}
                     }
                     waker.wake();
                 });
@@ -305,211 +361,211 @@ where
     }
 }
 
-impl<T, U> AsyncWrite for AsyncTLSConnection<T, U>
-where
-    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
-{
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
-        let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        //TODO: Is there any way to avoid copying all this data?
-        let saved_data = Vec::from(buf);
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(sz) => Poll::Ready(Ok(sz)),
-                Err(e) => Poll::Ready(Err(e)),
-            },
-            Err(TryRecvError::Empty) => {
-                tokio::task::spawn_blocking(move || {
-                    {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((rd, wr)) => {
-                                if tls.wants_read() || tls.wants_write() {
-                                    tls.complete_io(&mut *tcp);
-                                }
-                                eprintln!("How much did we read {} and write {}", rd, wr);
-                                eprintln!("What are we trying to send {:#?}", &saved_data);
-                                match tls.writer().write(&saved_data) {
-                                    Ok(sz) => {
-                                        if tls.wants_read() || tls.wants_write() {
-                                            tls.complete_io(&mut *tcp);
-                                        }
-                                        eprintln!("Writer is ok with sz {:?}", sz);
-                                        //eprintln!("Sending {:#?}", &raw_buf);
-                                        let res = tx
-                                            .lock()
-                                            .unwrap()
-                                            //TODO: I don't like this vec::new() call, it's pointless
-                                            .blocking_send((Ok(saved_data.len()), Some(Vec::new())));
-                                        match res {
-                                            Ok(_) => {
-                                                eprintln!("Blocking send is ok");
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Error is {}", e.to_string());
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("TLS Error is {}", e.to_string());
-                                        //TODO: This is bad, very bad, needs fix
-                                        tx.lock()
-                                            .unwrap()
-                                            .blocking_send((Ok(0), Some(Vec::new())))
-                                            .unwrap();
-                                        }
-                                }
-                            }
-                            Err(e) => {
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                            }
-                        }
-                    }
-                    waker.wake();
-                });
-                Poll::Pending
-            }
-            Err(_) => {
-                eprintln!("2");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
-        let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        tokio::task::spawn_blocking(move || {
-            {
-                let mut tls = tls.lock().unwrap();
-                let mut tcp = tcp.lock().unwrap();
-                match tls.complete_io(&mut *tcp) {
-                    Ok((_, _)) => {
-                        let res = tls.writer().flush();
-                        tx.lock()
-                            .unwrap()
-                            //TODO: I don't like this vec::new() call, it's pointless
-                            .blocking_send((Ok(0), Some(Vec::new())))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                    }
-                }
-            }
-            waker.wake();
-        });
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(_) => Poll::Ready(Ok(())),
-                Err(e) => Poll::Ready(Err(e)),
-            },
-            Err(TryRecvError::Empty) => Poll::Pending,
-            Err(_) => {
-                eprintln!("3");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
-        }
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
-        let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        tokio::task::spawn_blocking(move || {
-            {
-                let mut tls = tls.lock().unwrap();
-                let mut tcp = tcp.lock().unwrap();
-                match tls.complete_io(&mut *tcp) {
-                    Ok((_, _)) => {
-                        let res = tls.send_close_notify();
-                        tx.lock()
-                            .unwrap()
-                            //TODO: I don't like this vec::new() call, it's pointless
-                            .blocking_send((Ok(0), Some(Vec::new())))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                    }
-                }
-            }
-            waker.wake();
-        });
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(_) => Poll::Ready(Ok(())),
-                Err(e) => Poll::Ready(Err(e)),
-            },
-            Err(TryRecvError::Empty) => Poll::Pending,
-            Err(_) => {
-                eprintln!("4");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
-        }
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
-        let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        //TODO: Is there any way to avoid copying all this data?
-        let saved_data: Vec<u8> = bufs
-            .iter()
-            .flat_map(|slice| slice.iter())
-            .map(|byte| byte.to_owned())
-            .collect();
-        tokio::task::spawn_blocking(move || {
-            {
-                let mut tls = tls.lock().unwrap();
-                let mut tcp = tcp.lock().unwrap();
-                match tls.complete_io(&mut *tcp) {
-                    Ok((_, _)) => {
-                        let res = tls.writer().write(&saved_data);
-                        tx.lock()
-                            .unwrap()
-                            //TODO: I don't like this vec::new() call, it's pointless
-                            .blocking_send((Ok(saved_data.len()), Some(Vec::new())))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                    }
-                }
-            }
-            waker.wake();
-        });
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(sz) => Poll::Ready(Ok(sz)),
-                Err(e) => Poll::Ready(Err(e)),
-            },
-            Err(TryRecvError::Empty) => Poll::Pending,
-            Err(_) => {
-                eprintln!("5");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
-        }
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        true
-    }
-}
+//impl<T, U> AsyncWrite for AsyncTLSConnection<T, U>
+//where
+//    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
+//{
+//    fn poll_write(
+//        self: Pin<&mut Self>,
+//        cx: &mut Context<'_>,
+//        buf: &[u8],
+//    ) -> Poll<std::io::Result<usize>> {
+//        let tcp = Arc::clone(&self.tcp);
+//        let tls = Arc::clone(&self.tls);
+//        let waker = cx.waker().clone();
+//        let tx = Arc::clone(&self.tx);
+//        //TODO: Is there any way to avoid copying all this data?
+//        let saved_data = Vec::from(buf);
+//        match self.rx.lock().unwrap().try_recv() {
+//            Ok((res, _)) => match res {
+//                Ok(sz) => Poll::Ready(Ok(sz)),
+//                Err(e) => Poll::Ready(Err(e)),
+//            },
+//            Err(TryRecvError::Empty) => {
+//                tokio::task::spawn_blocking(move || {
+//                    {
+//                        let mut tls = tls.lock().unwrap();
+//                        let mut tcp = tcp.lock().unwrap();
+//                        match tls.complete_io(&mut *tcp) {
+//                            Ok((rd, wr)) => {
+//                                if tls.wants_read() || tls.wants_write() {
+//                                    tls.complete_io(&mut *tcp);
+//                                }
+//                                eprintln!("How much did we read {} and write {}", rd, wr);
+//                                eprintln!("What are we trying to send {:#?}", &saved_data);
+//                                match tls.writer().write(&saved_data) {
+//                                    Ok(sz) => {
+//                                        if tls.wants_read() || tls.wants_write() {
+//                                            tls.complete_io(&mut *tcp);
+//                                        }
+//                                        eprintln!("Writer is ok with sz {:?}", sz);
+//                                        //eprintln!("Sending {:#?}", &raw_buf);
+//                                        let res = tx
+//                                            .lock()
+//                                            .unwrap()
+//                                            //TODO: I don't like this vec::new() call, it's pointless
+//                                            .blocking_send((Ok(saved_data.len()), Some(Vec::new())));
+//                                        match res {
+//                                            Ok(_) => {
+//                                                eprintln!("Blocking send is ok");
+//                                            }
+//                                            Err(e) => {
+//                                                eprintln!("Error is {}", e.to_string());
+//                                            }
+//                                        }
+//                                    }
+//                                    Err(e) => {
+//                                        eprintln!("TLS Error is {}", e.to_string());
+//                                        //TODO: This is bad, very bad, needs fix
+//                                        tx.lock()
+//                                            .unwrap()
+//                                            .blocking_send((Ok(0), Some(Vec::new())))
+//                                            .unwrap();
+//                                        }
+//                                }
+//                            }
+//                            Err(e) => {
+//                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+//                            }
+//                        }
+//                    }
+//                    waker.wake();
+//                });
+//                Poll::Pending
+//            }
+//            Err(_) => {
+//                eprintln!("2");
+//                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+//            }
+//        }
+//    }
+//    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+//        let tcp = Arc::clone(&self.tcp);
+//        let tls = Arc::clone(&self.tls);
+//        let waker = cx.waker().clone();
+//        let tx = Arc::clone(&self.tx);
+//        tokio::task::spawn_blocking(move || {
+//            {
+//                let mut tls = tls.lock().unwrap();
+//                let mut tcp = tcp.lock().unwrap();
+//                match tls.complete_io(&mut *tcp) {
+//                    Ok((_, _)) => {
+//                        let res = tls.writer().flush();
+//                        tx.lock()
+//                            .unwrap()
+//                            //TODO: I don't like this vec::new() call, it's pointless
+//                            .blocking_send((Ok(0), Some(Vec::new())))
+//                            .unwrap();
+//                    }
+//                    Err(e) => {
+//                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+//                    }
+//                }
+//            }
+//            waker.wake();
+//        });
+//        match self.rx.lock().unwrap().try_recv() {
+//            Ok((res, _)) => match res {
+//                Ok(_) => Poll::Ready(Ok(())),
+//                Err(e) => Poll::Ready(Err(e)),
+//            },
+//            Err(TryRecvError::Empty) => Poll::Pending,
+//            Err(_) => {
+//                eprintln!("3");
+//                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+//            }
+//        }
+//    }
+//    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+//        let tcp = Arc::clone(&self.tcp);
+//        let tls = Arc::clone(&self.tls);
+//        let waker = cx.waker().clone();
+//        let tx = Arc::clone(&self.tx);
+//        tokio::task::spawn_blocking(move || {
+//            {
+//                let mut tls = tls.lock().unwrap();
+//                let mut tcp = tcp.lock().unwrap();
+//                match tls.complete_io(&mut *tcp) {
+//                    Ok((_, _)) => {
+//                        let res = tls.send_close_notify();
+//                        tx.lock()
+//                            .unwrap()
+//                            //TODO: I don't like this vec::new() call, it's pointless
+//                            .blocking_send((Ok(0), Some(Vec::new())))
+//                            .unwrap();
+//                    }
+//                    Err(e) => {
+//                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+//                    }
+//                }
+//            }
+//            waker.wake();
+//        });
+//        match self.rx.lock().unwrap().try_recv() {
+//            Ok((res, _)) => match res {
+//                Ok(_) => Poll::Ready(Ok(())),
+//                Err(e) => Poll::Ready(Err(e)),
+//            },
+//            Err(TryRecvError::Empty) => Poll::Pending,
+//            Err(_) => {
+//                eprintln!("4");
+//                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+//            }
+//        }
+//    }
+//
+//    fn poll_write_vectored(
+//        self: Pin<&mut Self>,
+//        cx: &mut Context<'_>,
+//        bufs: &[IoSlice<'_>],
+//    ) -> Poll<std::io::Result<usize>> {
+//        let tcp = Arc::clone(&self.tcp);
+//        let tls = Arc::clone(&self.tls);
+//        let waker = cx.waker().clone();
+//        let tx = Arc::clone(&self.tx);
+//        //TODO: Is there any way to avoid copying all this data?
+//        let saved_data: Vec<u8> = bufs
+//            .iter()
+//            .flat_map(|slice| slice.iter())
+//            .map(|byte| byte.to_owned())
+//            .collect();
+//        tokio::task::spawn_blocking(move || {
+//            {
+//                let mut tls = tls.lock().unwrap();
+//                let mut tcp = tcp.lock().unwrap();
+//                match tls.complete_io(&mut *tcp) {
+//                    Ok((_, _)) => {
+//                        let res = tls.writer().write(&saved_data);
+//                        tx.lock()
+//                            .unwrap()
+//                            //TODO: I don't like this vec::new() call, it's pointless
+//                            .blocking_send((Ok(saved_data.len()), Some(Vec::new())))
+//                            .unwrap();
+//                    }
+//                    Err(e) => {
+//                        tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+//                    }
+//                }
+//            }
+//            waker.wake();
+//        });
+//        match self.rx.lock().unwrap().try_recv() {
+//            Ok((res, _)) => match res {
+//                Ok(sz) => Poll::Ready(Ok(sz)),
+//                Err(e) => Poll::Ready(Err(e)),
+//            },
+//            Err(TryRecvError::Empty) => Poll::Pending,
+//            Err(_) => {
+//                eprintln!("5");
+//                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+//            }
+//        }
+//    }
+//
+//    fn is_write_vectored(&self) -> bool {
+//        true
+//    }
+//}
 
 /*
  * TODO:
@@ -537,6 +593,8 @@ async fn run_client() {
     // Connect to a peer
     let mut stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
 
+    //stream.write(b"Fuzzbizz").await.unwrap();
+
     let mut config = rustls::ClientConfig::builder()
         .with_safe_defaults()
         .with_root_certificates(rustls::RootCertStore::empty())
@@ -558,47 +616,72 @@ async fn run_client() {
 
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    let serialized = serde_json::to_vec(&client_start_handshake(&crypto)).unwrap();
-    tls_stream
-        .write(&serialized.len().to_be_bytes())
-        .await
-        .unwrap();
-    tls_stream.write(&serialized).await.unwrap();
 
-    println!("Client waiting response");
 
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    tokio::task::spawn_blocking(move || {
+        eprintln!("Starting to send");
+        let data: u64 = 0xabcd;
+        let mut tls = tls_stream.tls.lock().unwrap();
+        let mut tcp = tls_stream.tcp.lock().unwrap();
 
-    let packet_len = tls_stream.read_u64().await.unwrap() as usize;
+        tls.writer().write(&u64::to_be_bytes(data));
+        tls.write_tls(&mut *tcp);
+        tls.process_new_packets();
+        tls.read_tls(&mut *tcp);
+        tls.process_new_packets();
+        tls.write_tls(&mut *tcp);
+        tls.process_new_packets();
+        tls.read_tls(&mut *tcp);
+        tls.process_new_packets();
+        //tls_stream.tls.lock().unwrap().complete_io(&mut *tls_stream.tcp.lock().unwrap());
 
-    println!("Client starting loop");
+        eprintln!("Done sending");
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    });
 
-    while bytes_read < packet_len {
-        bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
-    }
-    println!("Client finishing handshake");
 
-    //Respond to the handshake
-    let response = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
-    client_finish_handshake::<Blake2b>(&mut crypto, &response);
-    read_buff.drain(..packet_len);
 
-    let pipeline = IOPipeline::<TestMessage> {
-        marker: PhantomData,
-        crypto: crypto,
-    };
+    //let serialized = serde_json::to_vec(&client_start_handshake(&crypto)).unwrap();
+    //tls_stream
+    //    .write(&serialized.len().to_be_bytes())
+    //    .await
+    //    .unwrap();
+    //tls_stream.write(&serialized).await.unwrap();
 
-    let mut framed = Framed::new(tls_stream, pipeline);
+    //println!("Client waiting response");
 
-    loop {
-        let message = TestMessage {
-            msg: format!("Client message {}", message_count),
-        };
-        framed.send(message).await.unwrap();
-        message_count += 1;
-        let response = framed.next().await.unwrap().unwrap();
-        println!("Client got message: \"{:?}\"", &response);
-    }
+    std::thread::sleep(std::time::Duration::from_secs(30));
+
+    //let packet_len = tls_stream.read_u64().await.unwrap() as usize;
+
+    //println!("Client starting loop");
+
+    //while bytes_read < packet_len {
+    //    bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
+    //}
+    //println!("Client finishing handshake");
+
+    ////Respond to the handshake
+    //let response = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
+    //client_finish_handshake::<Blake2b>(&mut crypto, &response);
+    //read_buff.drain(..packet_len);
+
+    //let pipeline = IOPipeline::<TestMessage> {
+    //    marker: PhantomData,
+    //    crypto: crypto,
+    //};
+
+    //let mut framed = Framed::new(tls_stream, pipeline);
+
+    //loop {
+    //    let message = TestMessage {
+    //        msg: format!("Client message {}", message_count),
+    //    };
+    //    framed.send(message).await.unwrap();
+    //    message_count += 1;
+    //    let response = framed.next().await.unwrap().unwrap();
+    //    println!("Client got message: \"{:?}\"", &response);
+    //}
 }
 
 //Ripped straight from the rustls example code
@@ -633,6 +716,28 @@ fn load_private_key(filename: &str) -> rustls::PrivateKey {
 }
 
 async fn process(mut stream: TcpStream) {
+
+    //let mut bridge = SyncIoBridge::new(stream);
+
+    //tokio::task::spawn_blocking(move || {
+    //    //let mut test_buf: Vec<u8> = Vec::new();
+    //    let mut test_buf: [u8; 4096] = [0u8; 4096];
+    //    //stream.read_buf(&mut test_buf).await.unwrap();
+    //    let ans = bridge.read(&mut test_buf).unwrap();
+    //    //eprintln!("Test buf is {} bytes big now", test_buf.len());
+    //    eprintln!("Data {}", ans);
+
+    //    //eprintln!("Starting to send");
+    //    //let data: u64 = 0xabcd;
+    //    //tls_stream.tls.lock().unwrap().writer().write(&u64::to_be_bytes(data));
+    //    //tls_stream.tls.lock().unwrap().complete_io(&mut *tls_stream.tcp.lock().unwrap());
+
+    //    //eprintln!("Done sending");
+    //    std::thread::sleep(std::time::Duration::from_secs(30));
+    //});
+
+    //std::thread::sleep(std::time::Duration::from_secs(3));
+
     let mut config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
@@ -657,40 +762,40 @@ async fn process(mut stream: TcpStream) {
     println!("Incoming client length {packet_len}");
     println!("Counts {bytes_read} {packet_len}");
 
-    read_buff.clear();
+    //read_buff.clear();
 
-    while bytes_read < packet_len {
-        bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
-    }
-    println!("Starting to respond");
-    //Respond to the handshake
-    let client_handshake = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
-    let server_response = server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
-    let serialized = serde_json::to_vec(&server_response).unwrap();
-    tls_stream
-        .write(&serialized.len().to_be_bytes())
-        .await
-        .unwrap();
-    tls_stream.write(&serialized).await.unwrap();
-    read_buff.drain(..packet_len);
-    message_count += 1;
+    //while bytes_read < packet_len {
+    //    bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
+    //}
+    //println!("Starting to respond");
+    ////Respond to the handshake
+    //let client_handshake = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
+    //let server_response = server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
+    //let serialized = serde_json::to_vec(&server_response).unwrap();
+    //tls_stream
+    //    .write(&serialized.len().to_be_bytes())
+    //    .await
+    //    .unwrap();
+    //tls_stream.write(&serialized).await.unwrap();
+    //read_buff.drain(..packet_len);
+    //message_count += 1;
 
-    let pipeline = IOPipeline::<TestMessage> {
-        marker: PhantomData,
-        crypto: crypto,
-    };
+    //let pipeline = IOPipeline::<TestMessage> {
+    //    marker: PhantomData,
+    //    crypto: crypto,
+    //};
 
-    let mut framed = Framed::new(tls_stream, pipeline);
+    //let mut framed = Framed::new(tls_stream, pipeline);
 
-    loop {
-        let response = framed.next().await.unwrap().unwrap();
-        println!("Server got message: \"{:?}\"", &response);
-        let message = TestMessage {
-            msg: format!("Server message {}", message_count),
-        };
-        framed.send(message).await.unwrap();
-        message_count += 1;
-    }
+    //loop {
+    //    let response = framed.next().await.unwrap().unwrap();
+    //    println!("Server got message: \"{:?}\"", &response);
+    //    let message = TestMessage {
+    //        msg: format!("Server message {}", message_count),
+    //    };
+    //    framed.send(message).await.unwrap();
+    //    message_count += 1;
+    //}
 }
 
 async fn run_server() {
