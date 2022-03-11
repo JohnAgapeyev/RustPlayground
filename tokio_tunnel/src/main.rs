@@ -8,7 +8,8 @@ use futures::stream::{self, StreamExt};
 use rustls::client::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::internal::msgs::handshake::DigitallySignedStruct;
 use rustls::{
-    Certificate, ClientConfig, ConnectionCommon, ServerConfig, ServerName, SignatureScheme,
+    Certificate, ClientConfig, ConnectionCommon, ServerConfig, ServerName, SideData,
+    SignatureScheme,
 };
 use rustls_pemfile::certs;
 use serde::de::DeserializeOwned;
@@ -151,53 +152,61 @@ impl ServerCertVerifier for DummyCertVerifier {
 }
 
 //TODO: Tons of code duplication here, and the tx/rx types are wonky
-struct AsyncTLSConnection<T, U>
-where
-    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync + 'static,
-{
-    tcp: Arc<std::sync::Mutex<SyncIoBridge<TcpStream>>>,
-    tls: Arc<std::sync::Mutex<T>>,
-    tx: Arc<std::sync::Mutex<tokio::sync::mpsc::Sender<(std::io::Result<usize>, Option<Vec<u8>>)>>>,
-    rx: Arc<
+struct AsyncTLSConnection<T> {
+    stream: Arc<std::sync::Mutex<rustls::StreamOwned<T, SyncIoBridge<TcpStream>>>>,
+    rx_tx:
+        Arc<std::sync::Mutex<tokio::sync::mpsc::Sender<(std::io::Result<usize>, Option<Vec<u8>>)>>>,
+    rx_rx: Arc<
         std::sync::Mutex<tokio::sync::mpsc::Receiver<(std::io::Result<usize>, Option<Vec<u8>>)>>,
     >,
+    tx_tx: Arc<std::sync::Mutex<tokio::sync::mpsc::Sender<std::io::Result<usize>>>>,
+    tx_rx: Arc<std::sync::Mutex<tokio::sync::mpsc::Receiver<std::io::Result<usize>>>>,
     read_buffer: Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
-impl<T, U> AsyncTLSConnection<T, U>
+impl<T, U> AsyncTLSConnection<T>
 where
-    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+    T: DerefMut + Deref<Target = ConnectionCommon<U>>,
+    U: SideData,
 {
     fn new(tcp: TcpStream, tls: T) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let (tx_tx, tx_rx) = tokio::sync::mpsc::channel(128);
+        let (rx_tx, rx_rx) = tokio::sync::mpsc::channel(128);
         AsyncTLSConnection {
-            tcp: Arc::new(std::sync::Mutex::new(SyncIoBridge::new(tcp))),
-            tls: Arc::new(std::sync::Mutex::new(tls)),
-            tx: Arc::new(std::sync::Mutex::new(tx)),
-            rx: Arc::new(std::sync::Mutex::new(rx)),
+            stream: Arc::new(std::sync::Mutex::new(rustls::StreamOwned::new(
+                tls,
+                SyncIoBridge::new(tcp),
+            ))),
+            tx_tx: Arc::new(std::sync::Mutex::new(tx_tx)),
+            tx_rx: Arc::new(std::sync::Mutex::new(tx_rx)),
+            rx_tx: Arc::new(std::sync::Mutex::new(rx_tx)),
+            rx_rx: Arc::new(std::sync::Mutex::new(rx_rx)),
             read_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
 
-impl<T, U> AsyncRead for AsyncTLSConnection<T, U>
+impl<T, U> AsyncRead for AsyncTLSConnection<T>
 where
-    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
+    T: DerefMut + Deref<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+    U: SideData,
 {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
+        let stream = Arc::clone(&self.stream);
         let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
+        let tx = Arc::clone(&self.rx_tx);
         let max_to_read = buf.remaining();
+
+        eprintln!("Poll read");
 
         {
             let mut read_buffer = self.read_buffer.lock().unwrap();
             if !read_buffer.is_empty() {
+                eprintln!("Poll read buffer hit");
                 let min_data: usize;
                 if max_to_read <= read_buffer.len() {
                     min_data = max_to_read;
@@ -215,9 +224,10 @@ where
             }
         }
 
-        match self.rx.lock().unwrap().try_recv() {
+        match self.rx_rx.lock().unwrap().try_recv() {
             Ok((res, raw_buf)) => match res {
                 Ok(_) => {
+                    eprintln!("Poll read channel recv");
                     debug_assert!(raw_buf.is_some());
                     let raw_vec = raw_buf.unwrap();
                     if raw_vec.len() > max_to_read {
@@ -225,13 +235,14 @@ where
                         self.read_buffer
                             .lock()
                             .unwrap()
-                            .extend_from_slice(&raw_vec[max_to_read + 1..]);
+                            .extend_from_slice(&raw_vec[max_to_read..]);
                         eprintln!("Too much data {} {}", &raw_vec.len(), max_to_read);
                         eprintln!(
                             "Read buffer now holds {}",
                             self.read_buffer.lock().unwrap().len()
                         );
                     } else {
+                        eprintln!("Saving the whole {} bytes", raw_vec.len());
                         buf.put_slice(&raw_vec);
                     }
                     Poll::Ready(Ok(()))
@@ -241,49 +252,33 @@ where
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((rd, wr)) => {
-                                let mut raw_buf: Vec<u8> = Vec::with_capacity(4096);
+                        eprintln!("Poll read spawning");
+                        let mut stream = stream.lock().unwrap();
+                        let mut raw_buf = [0u8; 4096];
 
-                                let mut good_result = false;
-
-                                match tls.reader().read_to_end(&mut raw_buf) {
+                        eprintln!("Read to end");
+                        match stream.read(&mut raw_buf) {
+                            Ok(sz) => {
+                                let vec_buf = Vec::from(&raw_buf[..sz]);
+                                eprintln!("Trying to blocking send {} bytes", vec_buf.len());
+                                let res = tx
+                                    .lock()
+                                    .unwrap()
+                                    .blocking_send((Ok(vec_buf.len()), Some(vec_buf)));
+                                match res {
                                     Ok(_) => {
-                                        good_result = true;
+                                        eprintln!("Blocking send is ok");
                                     }
                                     Err(e) => {
-                                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                                            good_result = true;
-                                        } else {
-                                            good_result = false;
-                                            eprintln!("TLS Error is {}", e.to_string());
-                                            tx.lock()
-                                                .unwrap()
-                                                .blocking_send((Err(e), None))
-                                                .unwrap();
-                                        }
-                                    }
-                                }
-                                if good_result {
-                                    let res = tx
-                                        .lock()
-                                        .unwrap()
-                                        .blocking_send((Ok(raw_buf.len()), Some(raw_buf)));
-                                    match res {
-                                        Ok(_) => {
-                                            eprintln!("Blocking send is ok");
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Error is {}", e.to_string());
-                                        }
+                                        eprintln!("Error is {}", e.to_string());
                                     }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Error is {}", e.to_string());
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+                                if e.kind() != std::io::ErrorKind::WouldBlock {
+                                    eprintln!("TLS Error is {}", e.to_string());
+                                    tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+                                }
                             }
                         }
                     }
@@ -299,70 +294,52 @@ where
     }
 }
 
-impl<T, U> AsyncWrite for AsyncTLSConnection<T, U>
+impl<T, U> AsyncWrite for AsyncTLSConnection<T>
 where
-    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
+    T: DerefMut + Deref<Target = ConnectionCommon<U>> + Send + Sync + 'static,
+    U: SideData,
 {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
+        let stream = Arc::clone(&self.stream);
         let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
+        let tx = Arc::clone(&self.tx_tx);
         //TODO: Is there any way to avoid copying all this data?
         let saved_data = Vec::from(buf);
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(sz) => Poll::Ready(Ok(sz)),
-                Err(e) => Poll::Ready(Err(e)),
-            },
+        eprintln!("Poll write called");
+        match self.tx_rx.lock().unwrap().try_recv() {
+            Ok(res) => {
+                eprintln!("Poll write channel recv worked");
+                match res {
+                    Ok(sz) => Poll::Ready(Ok(sz)),
+                    Err(e) => Poll::Ready(Err(e)),
+                }
+            }
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((rd, wr)) => {
-                                eprintln!("How much did we read {} and write {}", rd, wr);
-                                //eprintln!("What are we trying to send {:#?}", &saved_data);
-                                match tls.writer().write(&saved_data) {
-                                    Ok(sz) => {
-                                        eprintln!("Writer is ok with sz {:?}", sz);
-                                        let test = tls.complete_io(&mut *tcp);
-                                        eprintln!("Follow up answer {test:#?}");
-                                        //eprintln!("Sending {:#?}", &raw_buf);
-                                        let res = tx
-                                            .lock()
-                                            .unwrap()
-                                            //TODO: I don't like this vec::new() call, it's pointless
-                                            .blocking_send((
-                                                Ok(saved_data.len()),
-                                                Some(Vec::new()),
-                                            ));
-                                        match res {
-                                            Ok(_) => {
-                                                eprintln!("Blocking send is ok");
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Error is {}", e.to_string());
-                                            }
-                                        }
+                        println!("Poll write spawning");
+                        match stream.lock().unwrap().write(&saved_data) {
+                            Ok(sz) => {
+                                eprintln!("Writer is ok with sz {:?}", sz);
+
+                                let res = tx.lock().unwrap().blocking_send(Ok(saved_data.len()));
+                                match res {
+                                    Ok(_) => {
+                                        eprintln!("Blocking write send is ok");
                                     }
                                     Err(e) => {
-                                        eprintln!("TLS Error is {}", e.to_string());
-                                        //TODO: This is bad, very bad, needs fix
-                                        tx.lock()
-                                            .unwrap()
-                                            .blocking_send((Ok(0), Some(Vec::new())))
-                                            .unwrap();
+                                        eprintln!("Error is {}", e.to_string());
                                     }
                                 }
                             }
                             Err(e) => {
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
+                                eprintln!("TLS Error is {}", e.to_string());
+                                //TODO: This is bad, very bad, needs fix
+                                tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
                             }
                         }
                     }
@@ -377,33 +354,19 @@ where
         }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
+        let stream = Arc::clone(&self.stream);
         let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
+        let tx = Arc::clone(&self.tx_tx);
+        match self.tx_rx.lock().unwrap().try_recv() {
+            Ok(res) => match res {
                 Ok(_) => Poll::Ready(Ok(())),
                 Err(e) => Poll::Ready(Err(e)),
             },
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((_, _)) => {
-                                let res = tls.writer().flush();
-                                tx.lock()
-                                    .unwrap()
-                                    //TODO: I don't like this vec::new() call, it's pointless
-                                    .blocking_send((Ok(0), Some(Vec::new())))
-                                    .unwrap();
-                            }
-                            Err(e) => {
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                            }
-                        }
+                        let res = stream.lock().unwrap().flush();
+                        tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
                     }
                     waker.wake();
                 });
@@ -416,43 +379,31 @@ where
         }
     }
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
-        let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
-                Ok(_) => Poll::Ready(Ok(())),
-                Err(e) => Poll::Ready(Err(e)),
-            },
-            Err(TryRecvError::Empty) => {
-                tokio::task::spawn_blocking(move || {
-                    {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((_, _)) => {
-                                let res = tls.send_close_notify();
-                                tx.lock()
-                                    .unwrap()
-                                    //TODO: I don't like this vec::new() call, it's pointless
-                                    .blocking_send((Ok(0), Some(Vec::new())))
-                                    .unwrap();
-                            }
-                            Err(e) => {
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                            }
-                        }
-                    }
-                    waker.wake();
-                });
-                Poll::Pending
-            }
-            Err(_) => {
-                eprintln!("4");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
-        }
+        Poll::Ready(Ok(()))
+
+        //let stream = Arc::clone(&self.stream);
+        //let waker = cx.waker().clone();
+        //let tx = Arc::clone(&self.tx_tx);
+        //match self.tx_rx.lock().unwrap().try_recv() {
+        //    Ok(res) => match res {
+        //        Ok(_) => Poll::Ready(Ok(())),
+        //        Err(e) => Poll::Ready(Err(e)),
+        //    },
+        //    Err(TryRecvError::Empty) => {
+        //        tokio::task::spawn_blocking(move || {
+        //            {
+        //                stream.lock().unwrap().send_close_notify();
+        //                tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
+        //            }
+        //            waker.wake();
+        //        });
+        //        Poll::Pending
+        //    }
+        //    Err(_) => {
+        //        eprintln!("4");
+        //        Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+        //    }
+        //}
     }
 
     fn poll_write_vectored(
@@ -460,39 +411,29 @@ where
         cx: &mut Context<'_>,
         bufs: &[IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
-        let tcp = Arc::clone(&self.tcp);
-        let tls = Arc::clone(&self.tls);
+        let stream = Arc::clone(&self.stream);
         let waker = cx.waker().clone();
-        let tx = Arc::clone(&self.tx);
+        let tx = Arc::clone(&self.tx_tx);
         //TODO: Is there any way to avoid copying all this data?
         let saved_data: Vec<u8> = bufs
             .iter()
             .flat_map(|slice| slice.iter())
             .map(|byte| byte.to_owned())
             .collect();
-        match self.rx.lock().unwrap().try_recv() {
-            Ok((res, _)) => match res {
+        eprintln!("WRITE VECTORED CALLED");
+        match self.tx_rx.lock().unwrap().try_recv() {
+            Ok(res) => match res {
                 Ok(sz) => Poll::Ready(Ok(sz)),
                 Err(e) => Poll::Ready(Err(e)),
             },
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let mut tls = tls.lock().unwrap();
-                        let mut tcp = tcp.lock().unwrap();
-                        match tls.complete_io(&mut *tcp) {
-                            Ok((_, _)) => {
-                                let res = tls.writer().write(&saved_data);
-                                tx.lock()
-                                    .unwrap()
-                                    //TODO: I don't like this vec::new() call, it's pointless
-                                    .blocking_send((Ok(saved_data.len()), Some(Vec::new())))
-                                    .unwrap();
-                            }
-                            Err(e) => {
-                                tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
-                            }
-                        }
+                        let res = stream.lock().unwrap().write(&saved_data);
+                        tx.lock()
+                            .unwrap()
+                            .blocking_send(Ok(saved_data.len()))
+                            .unwrap();
                     }
                     waker.wake();
                 });
@@ -591,10 +532,10 @@ async fn run_client() {
 
     //std::thread::sleep(std::time::Duration::from_secs(30));
 
-    //let packet_len = tls_stream.read_u64().await.unwrap() as usize;
-    let packet_res = tls_stream.read_u64().await;
-    eprintln!("Client read result {packet_res:#?}");
-    let packet_len = packet_res.unwrap() as usize;
+    let packet_len = tls_stream.read_u64().await.unwrap() as usize;
+    //let packet_res = tls_stream.read_u64().await;
+    //eprintln!("Client read result {packet_res:#?}");
+    //let packet_len = packet_res.unwrap() as usize;
 
     println!("Client starting loop");
 
@@ -714,11 +655,14 @@ async fn process(mut stream: TcpStream) {
     let client_handshake = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
     let server_response = server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
     let serialized = serde_json::to_vec(&server_response).unwrap();
+    println!("Serialized response is done");
     tls_stream
         .write(&serialized.len().to_be_bytes())
         .await
         .unwrap();
+    println!("Wrote len");
     tls_stream.write(&serialized).await.unwrap();
+    println!("Wrote data");
     read_buff.drain(..packet_len);
     message_count += 1;
 
@@ -728,6 +672,8 @@ async fn process(mut stream: TcpStream) {
     };
 
     let mut framed = Framed::new(tls_stream, pipeline);
+
+    println!("Starting main loop");
 
     loop {
         let response = framed.next().await.unwrap().unwrap();
