@@ -201,23 +201,15 @@ where
         let tx = Arc::clone(&self.rx_tx);
         let max_to_read = buf.remaining();
 
-        eprintln!("Poll read");
-
         {
             let mut read_buffer = self.read_buffer.lock().unwrap();
             if !read_buffer.is_empty() {
-                eprintln!("Poll read buffer hit");
                 let min_data: usize;
                 if max_to_read <= read_buffer.len() {
                     min_data = max_to_read;
                 } else {
                     min_data = read_buffer.len();
                 }
-                eprintln!(
-                    "Read buffer has len {} and we are draining {} from it",
-                    &read_buffer.len(),
-                    min_data
-                );
                 let drained_data: Vec<u8> = read_buffer.drain(..min_data).collect();
                 buf.put_slice(&drained_data);
                 return Poll::Ready(Ok(()));
@@ -227,7 +219,6 @@ where
         match self.rx_rx.lock().unwrap().try_recv() {
             Ok((res, raw_buf)) => match res {
                 Ok(_) => {
-                    eprintln!("Poll read channel recv");
                     debug_assert!(raw_buf.is_some());
                     let raw_vec = raw_buf.unwrap();
                     if raw_vec.len() > max_to_read {
@@ -236,13 +227,7 @@ where
                             .lock()
                             .unwrap()
                             .extend_from_slice(&raw_vec[max_to_read..]);
-                        eprintln!("Too much data {} {}", &raw_vec.len(), max_to_read);
-                        eprintln!(
-                            "Read buffer now holds {}",
-                            self.read_buffer.lock().unwrap().len()
-                        );
                     } else {
-                        eprintln!("Saving the whole {} bytes", raw_vec.len());
                         buf.put_slice(&raw_vec);
                     }
                     Poll::Ready(Ok(()))
@@ -252,31 +237,19 @@ where
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        eprintln!("Poll read spawning");
                         let mut stream = stream.lock().unwrap();
                         let mut raw_buf = [0u8; 4096];
 
-                        eprintln!("Read to end");
                         match stream.read(&mut raw_buf) {
                             Ok(sz) => {
                                 let vec_buf = Vec::from(&raw_buf[..sz]);
-                                eprintln!("Trying to blocking send {} bytes", vec_buf.len());
-                                let res = tx
-                                    .lock()
+                                tx.lock()
                                     .unwrap()
-                                    .blocking_send((Ok(vec_buf.len()), Some(vec_buf)));
-                                match res {
-                                    Ok(_) => {
-                                        eprintln!("Blocking send is ok");
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error is {}", e.to_string());
-                                    }
-                                }
+                                    .blocking_send((Ok(vec_buf.len()), Some(vec_buf)))
+                                    .unwrap();
                             }
                             Err(e) => {
                                 if e.kind() != std::io::ErrorKind::WouldBlock {
-                                    eprintln!("TLS Error is {}", e.to_string());
                                     tx.lock().unwrap().blocking_send((Err(e), None)).unwrap();
                                 }
                             }
@@ -286,10 +259,7 @@ where
                 });
                 Poll::Pending
             }
-            Err(e) => {
-                eprintln!("What is my error {}", e.to_string());
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
+            Err(_) => Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
         }
     }
 }
@@ -309,50 +279,27 @@ where
         let tx = Arc::clone(&self.tx_tx);
         //TODO: Is there any way to avoid copying all this data?
         let saved_data = Vec::from(buf);
-        eprintln!("Poll write called");
         match self.tx_rx.lock().unwrap().try_recv() {
-            Ok(res) => {
-                eprintln!("Poll write channel recv worked");
-                match res {
-                    Ok(sz) => Poll::Ready(Ok(sz)),
-                    Err(e) => Poll::Ready(Err(e)),
-                }
-            }
+            Ok(res) => match res {
+                Ok(sz) => Poll::Ready(Ok(sz)),
+                Err(e) => Poll::Ready(Err(e)),
+            },
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        println!("Poll write spawning");
                         match stream.lock().unwrap().write(&saved_data) {
-                            Ok(sz) => {
-                                eprintln!("Writer is ok with sz {:?}", sz);
-
-                                let res = tx.lock().unwrap().blocking_send(Ok(saved_data.len()));
-                                match res {
-                                    Ok(_) => {
-                                        eprintln!("Blocking write send is ok");
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error is {}", e.to_string());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("TLS Error is {}", e.to_string());
-                                //TODO: This is bad, very bad, needs fix
-                                tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
-                            }
+                            Ok(sz) => tx.lock().unwrap().blocking_send(Ok(sz)).unwrap(),
+                            Err(e) => tx.lock().unwrap().blocking_send(Err(e)).unwrap(),
                         }
                     }
                     waker.wake();
                 });
                 Poll::Pending
             }
-            Err(_) => {
-                eprintln!("2");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
+            Err(_) => Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
         }
     }
+
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let stream = Arc::clone(&self.stream);
         let waker = cx.waker().clone();
@@ -365,45 +312,22 @@ where
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let res = stream.lock().unwrap().flush();
-                        tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
+                        match stream.lock().unwrap().flush() {
+                            Ok(_) => tx.lock().unwrap().blocking_send(Ok(0)).unwrap(),
+                            Err(e) => tx.lock().unwrap().blocking_send(Err(e)).unwrap(),
+                        }
                     }
                     waker.wake();
                 });
                 Poll::Pending
             }
-            Err(_) => {
-                eprintln!("3");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
+            Err(_) => Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
         }
     }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
 
-        //let stream = Arc::clone(&self.stream);
-        //let waker = cx.waker().clone();
-        //let tx = Arc::clone(&self.tx_tx);
-        //match self.tx_rx.lock().unwrap().try_recv() {
-        //    Ok(res) => match res {
-        //        Ok(_) => Poll::Ready(Ok(())),
-        //        Err(e) => Poll::Ready(Err(e)),
-        //    },
-        //    Err(TryRecvError::Empty) => {
-        //        tokio::task::spawn_blocking(move || {
-        //            {
-        //                stream.lock().unwrap().send_close_notify();
-        //                tx.lock().unwrap().blocking_send(Ok(0)).unwrap();
-        //            }
-        //            waker.wake();
-        //        });
-        //        Poll::Pending
-        //    }
-        //    Err(_) => {
-        //        eprintln!("4");
-        //        Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-        //    }
-        //}
+    //TODO: Is there even a shutdown call available to us for TLS here?
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 
     fn poll_write_vectored(
@@ -420,7 +344,6 @@ where
             .flat_map(|slice| slice.iter())
             .map(|byte| byte.to_owned())
             .collect();
-        eprintln!("WRITE VECTORED CALLED");
         match self.tx_rx.lock().unwrap().try_recv() {
             Ok(res) => match res {
                 Ok(sz) => Poll::Ready(Ok(sz)),
@@ -429,20 +352,16 @@ where
             Err(TryRecvError::Empty) => {
                 tokio::task::spawn_blocking(move || {
                     {
-                        let res = stream.lock().unwrap().write(&saved_data);
-                        tx.lock()
-                            .unwrap()
-                            .blocking_send(Ok(saved_data.len()))
-                            .unwrap();
+                        match stream.lock().unwrap().write(&saved_data) {
+                            Ok(sz) => tx.lock().unwrap().blocking_send(Ok(sz)).unwrap(),
+                            Err(e) => tx.lock().unwrap().blocking_send(Err(e)).unwrap(),
+                        }
                     }
                     waker.wake();
                 });
                 Poll::Pending
             }
-            Err(_) => {
-                eprintln!("5");
-                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
-            }
+            Err(_) => Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
         }
     }
 
@@ -451,33 +370,9 @@ where
     }
 }
 
-/*
- * TODO:
- * Here's the plan:
- * Vec<u8> implements write and [u8] implements read
- * We can use this to make a nice and easy synchronous IO interface in an async function
- * This will avoid SyncIoBridge which avoids taking ownership of our async underlying stream
- * Just add some yield calls for good measure, and let it whir away in the background
- */
-//fn run_tls_connection<T, U>(conn: T, stream: TcpStream)
-//where
-//    T: DerefMut<Target = ConnectionCommon<U>> + Send + Sync,
-//{
-//    //let mut bridge = SyncIoBridge::new(stream);
-//    //let (tx, rx) = oneshot::channel();
-//
-//    //tokio::task::spawn(async move || {
-//    //    let mut conn: T = rx.blocking_recv().unwrap();
-//    //    conn.complete_io(&mut bridge);
-//    //});
-//    //tx.send(conn);
-//}
-
 async fn run_client() {
     // Connect to a peer
-    let mut stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
-
-    //stream.write(b"Fuzzbizz").await.unwrap();
+    let stream = TcpStream::connect("127.0.0.1:1337").await.unwrap();
 
     let mut config = rustls::ClientConfig::builder()
         .with_safe_defaults()
@@ -488,8 +383,7 @@ async fn run_client() {
         .set_certificate_verifier(Arc::new(DummyCertVerifier {}));
 
     let rc_config = Arc::new(config);
-    let mut client =
-        rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap()).unwrap();
+    let client = rustls::ClientConnection::new(rc_config, "localhost".try_into().unwrap()).unwrap();
 
     let mut tls_stream = AsyncTLSConnection::new(stream, client);
 
@@ -498,29 +392,6 @@ async fn run_client() {
     let mut read_buff: Vec<u8> = Vec::new();
     let mut bytes_read = 0usize;
 
-    //std::thread::sleep(std::time::Duration::from_secs(3));
-
-    //tokio::task::spawn_blocking(move || {
-    //    eprintln!("Starting to send");
-    //    let data: u64 = 0xabcd;
-    //    let mut tls = tls_stream.tls.lock().unwrap();
-    //    let mut tcp = tls_stream.tcp.lock().unwrap();
-
-    //    tls.writer().write(&u64::to_be_bytes(data));
-    //    tls.write_tls(&mut *tcp);
-    //    tls.process_new_packets();
-    //    tls.read_tls(&mut *tcp);
-    //    tls.process_new_packets();
-    //    tls.write_tls(&mut *tcp);
-    //    tls.process_new_packets();
-    //    tls.read_tls(&mut *tcp);
-    //    tls.process_new_packets();
-    //    //tls_stream.tls.lock().unwrap().complete_io(&mut *tls_stream.tcp.lock().unwrap());
-
-    //    eprintln!("Done sending");
-    //    std::thread::sleep(std::time::Duration::from_secs(30));
-    //});
-
     let serialized = serde_json::to_vec(&client_start_handshake(&crypto)).unwrap();
     tls_stream
         .write(&serialized.len().to_be_bytes())
@@ -528,22 +399,11 @@ async fn run_client() {
         .unwrap();
     tls_stream.write(&serialized).await.unwrap();
 
-    println!("Client waiting response");
-
-    //std::thread::sleep(std::time::Duration::from_secs(30));
-
     let packet_len = tls_stream.read_u64().await.unwrap() as usize;
-    //let packet_res = tls_stream.read_u64().await;
-    //eprintln!("Client read result {packet_res:#?}");
-    //let packet_len = packet_res.unwrap() as usize;
-
-    println!("Client starting loop");
 
     while bytes_read < packet_len {
         bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
     }
-    println!("Client finishing handshake");
-
     //Respond to the handshake
     let response = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
     client_finish_handshake::<Blake2b>(&mut crypto, &response);
@@ -598,29 +458,8 @@ fn load_private_key(filename: &str) -> rustls::PrivateKey {
     );
 }
 
-async fn process(mut stream: TcpStream) {
-    //let mut bridge = SyncIoBridge::new(stream);
-
-    //tokio::task::spawn_blocking(move || {
-    //    //let mut test_buf: Vec<u8> = Vec::new();
-    //    let mut test_buf: [u8; 4096] = [0u8; 4096];
-    //    //stream.read_buf(&mut test_buf).await.unwrap();
-    //    let ans = bridge.read(&mut test_buf).unwrap();
-    //    //eprintln!("Test buf is {} bytes big now", test_buf.len());
-    //    eprintln!("Data {}", ans);
-
-    //    //eprintln!("Starting to send");
-    //    //let data: u64 = 0xabcd;
-    //    //tls_stream.tls.lock().unwrap().writer().write(&u64::to_be_bytes(data));
-    //    //tls_stream.tls.lock().unwrap().complete_io(&mut *tls_stream.tcp.lock().unwrap());
-
-    //    //eprintln!("Done sending");
-    //    std::thread::sleep(std::time::Duration::from_secs(30));
-    //});
-
-    //std::thread::sleep(std::time::Duration::from_secs(3));
-
-    let mut config = ServerConfig::builder()
+async fn process(stream: TcpStream) {
+    let config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(
@@ -630,7 +469,7 @@ async fn process(mut stream: TcpStream) {
         .expect("bad certificate/key");
 
     let rc_config = Arc::new(config);
-    let mut server = rustls::ServerConnection::new(rc_config).unwrap();
+    let server = rustls::ServerConnection::new(rc_config).unwrap();
 
     let mut tls_stream = AsyncTLSConnection::new(stream, server);
 
@@ -639,30 +478,24 @@ async fn process(mut stream: TcpStream) {
     let mut read_buff: Vec<u8> = Vec::new();
     let mut bytes_read = 0usize;
 
-    //let packet_len = tls_stream.read_u64().await.unwrap().try_into().unwrap();
     let packet_len = tls_stream.read_u64().await.unwrap() as usize;
     println!("Incoming client length {packet_len}");
     println!("Counts {bytes_read} {packet_len}");
 
     read_buff.clear();
 
-    //TODO: I'm pretty sure we're getting stuck here, need a better solution
     while bytes_read < packet_len {
         bytes_read += tls_stream.read_buf(&mut read_buff).await.unwrap();
     }
-    println!("Starting to respond");
     //Respond to the handshake
     let client_handshake = serde_json::from_slice(&read_buff[..packet_len]).unwrap();
     let server_response = server_respond_handshake::<Blake2b>(&mut crypto, &client_handshake);
     let serialized = serde_json::to_vec(&server_response).unwrap();
-    println!("Serialized response is done");
     tls_stream
         .write(&serialized.len().to_be_bytes())
         .await
         .unwrap();
-    println!("Wrote len");
     tls_stream.write(&serialized).await.unwrap();
-    println!("Wrote data");
     read_buff.drain(..packet_len);
     message_count += 1;
 
@@ -672,8 +505,6 @@ async fn process(mut stream: TcpStream) {
     };
 
     let mut framed = Framed::new(tls_stream, pipeline);
-
-    println!("Starting main loop");
 
     loop {
         let response = framed.next().await.unwrap().unwrap();
@@ -692,7 +523,7 @@ async fn run_server() {
 
     loop {
         // The second item contains the IP and port of the new connection.
-        let (mut socket, _) = listener.accept().await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
         // A new task is spawned for each inbound socket. The socket is
         // moved to the new task and processed there.
         tokio::spawn(async move {
